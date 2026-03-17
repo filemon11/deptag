@@ -1,3 +1,4 @@
 [deprels]
-arguments = [ "nsubj", "nobj" ]
-adjuncts = [ "flat", "list" ]
+arguments = [ "nsubj", "obj", "iobj", "csubj", "ccomp", "xcomp", "obl:agent" ]
+adjuncts = [ "obl", "obl:unmarked", "expl", "vocative", "dislocated", "advcl", "advmod", "discourse", "aux", "cop", "mark", "nmod", "appos", "nummod", "acl", "amod", "det", "case", "conj", "cc", "fixed", "flat", "list", "parataxis", "compound", "orphan", "goeswith", "reparandum", "punct", "dep"]
+delete = [ "root" ]
