@@ -2,10 +2,12 @@ import xml.etree.ElementTree
 import pathlib
 import dataclasses
 import toml
+import typed_settings as ts
 
 from .. import deprels
 
-STANDARDS_DIR = "standards/"
+STANDARDS_DIR = pathlib.Path("standards/")
+DEFAULT_STANDARD = "default"
 "Directory where standards are located"
 
 
@@ -22,13 +24,13 @@ class DeprelStandard:
 # Standards conversion
 
 def load_stats_as_standard(
-        stats_file: pathlib.Path,
+        stats_dir: pathlib.Path,
         ) -> DeprelStandard:
     """_summary_
 
     Parameters
     ----------
-    stats_file : pathlib.Path
+    stats_dir : pathlib.Path
         _description_
 
     Returns
@@ -38,7 +40,7 @@ def load_stats_as_standard(
     """
 
     # Load xml file
-    tree = xml.etree.ElementTree.parse(stats_file)
+    tree = xml.etree.ElementTree.parse(stats_dir / "stats.xml")
 
     # Navigate to deps summary
     root = tree.getroot()
@@ -69,6 +71,7 @@ def load_stats_as_standard(
 def save_standard(
         standard: DeprelStandard,
         name: str,
+        *, dir: pathlib.Path = STANDARDS_DIR
         ) -> None:
     """_summary_
 
@@ -80,13 +83,16 @@ def save_standard(
         _description_
     """
 
-    with open(pathlib.Path(STANDARDS_DIR, f"{name}.toml"), "w") as f:
+    with open(dir / f"{name}.toml", "w") as f:
         toml.dump({"deprels": dataclasses.asdict(standard)}, f)
 
 
 # Standards loading
 
-# standard = ts.load(
-#     DeprelStandard, appname="deprels",
-#     config_files=["../../standards/default.toml"])
-# print(standard)
+def load_standard(
+        name: str = DEFAULT_STANDARD,
+        *, dir: pathlib.Path = STANDARDS_DIR
+        ) -> DeprelStandard:
+    return ts.load(
+        DeprelStandard, appname="deprels",
+        config_files=[dir / f"{name}.toml"])
