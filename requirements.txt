@@ -1,0 +1,1 @@
+typed_settings==25.3.0

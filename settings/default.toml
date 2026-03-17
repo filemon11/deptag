@@ -1,0 +1,3 @@
+[deprels]
+arguments = [ "nsubj", "nobj" ]
+adjuncts = [ "flat", "list" ]
