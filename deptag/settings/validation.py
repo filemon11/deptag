@@ -1,5 +1,5 @@
 from . import settings, standards
-from .. import deprels
+from .. import data
 
 
 def assert_settings(
@@ -39,8 +39,8 @@ def assert_settings(
     subtype: None | str
     for deprel in sett.arguments + sett.adjuncts + sett.delete:
         subtype = None
-        if deprels.has_subtype(deprel):
-            deprel, subtype = deprels.split_main_sub(deprel)
+        if data.has_subtype(deprel):
+            deprel, subtype = data.split_main_sub(deprel)
 
         assert deprel in stan.labels, (
             f"Deprel '{deprel}' is not defined in standard."
@@ -60,8 +60,8 @@ def assert_settings(
     sett_deprels: dict[str, list[str]] = {}
     for deprel in sett.arguments + sett.adjuncts + sett.delete:
         subtype = None
-        if deprels.has_subtype(deprel):
-            deprel, subtype = deprels.split_main_sub(deprel)
+        if data.has_subtype(deprel):
+            deprel, subtype = data.split_main_sub(deprel)
         if deprel not in sett_deprels:
             sett_deprels[deprel] = []
         if subtype is not None:

@@ -4,7 +4,7 @@ import dataclasses
 import toml
 import typed_settings as ts
 
-from .. import deprels
+from .. import data
 
 STANDARDS_DIR = pathlib.Path("standards/")
 DEFAULT_STANDARD = "default"
@@ -57,8 +57,8 @@ def load_stats_as_standard(
         # if it is not initialised yet.
         subtype = None
         deprel_name = deprel.attrib["name"]
-        if deprels.has_subtype(deprel_name):
-            deprel_name, subtype = deprels.split_main_sub(deprel_name)
+        if data.has_subtype(deprel_name):
+            deprel_name, subtype = data.split_main_sub(deprel_name)
         if deprel_name not in labels:
             labels[deprel_name] = tuple()
         if subtype is not None:

@@ -1,4 +1,3 @@
-[deprels]
 [deprels.labels]
 nsubj = [ "pass", "outer" ]
 aux = [ ]

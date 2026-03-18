@@ -2,6 +2,9 @@ import pathlib
 
 from . import settings, standards, validation
 
+UD_DIR = pathlib.Path(
+    "data", "Universal Dependencies 2.17", "ud-treebanks-v2.17")
+
 
 # TODO: better integration for UD in data folder
 def load_settings(
@@ -10,6 +13,7 @@ def load_settings(
         *, settings_dir: pathlib.Path = settings.SETTINGS_DIR,
         standards_dir: pathlib.Path = standards.STANDARDS_DIR,
         standard_from_xml: bool = False,
+        ud_folder: pathlib.Path = UD_DIR,
         save_standard_from_xml: bool = True,
         save_standard_from_xml_dir: pathlib.Path = (
             standards.STANDARDS_DIR)
@@ -45,9 +49,9 @@ def load_settings(
     if standard_from_xml:
         # ignores standard_name; if save_standard_from_xml is True,
         # use standard_name as the name of the new toml standard file
-        # TODO: throw INFO about this
+        # and the UD corpus name
         stan = standards.load_stats_as_standard(
-            standards_dir
+            ud_folder / f"UD_{standard_name}"
         )
         if save_standard_from_xml:
             standards.save_standard(

@@ -2,7 +2,7 @@ import typed_settings as ts
 import dataclasses
 import pathlib
 
-SETTINGS_DIR = pathlib.Path("standards/")
+SETTINGS_DIR = pathlib.Path("settings/")
 DEFAULT_SETTINGS = "default"
 "Directory where settings are located"
 
