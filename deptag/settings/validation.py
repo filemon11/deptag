@@ -2,9 +2,22 @@ from . import settings, standards
 from .. import data
 
 
-def assert_settings(
+def assert_dep_settings(
+        sett: settings.DepSettings) -> None:
+    if sett.merged is not None:
+        for i, (a_name, a_list) in enumerate(sett.merged.items()):
+            for b_name, b_list in list(sett.merged.items())[i+1:]:
+                assert len(set(a_list).intersection(b_list)) == 0, (
+                    "Duplicate relation in definitions of merged"
+                    f" deprels '{a_name}' and '{b_name}'."
+                )
+
+
+def assert_dep_standard(
         sett: settings.DepSettings,
-        stan: standards.DeprelStandard
+        stan: standards.DeprelStandard,
+        *,
+        allow_partial_underspecification: bool = True,
         ) -> None:
     """Checks if all deprels and subtypes
     mentioned in settings are defined in standard
@@ -72,7 +85,10 @@ def assert_settings(
             f"Deprel '{stan_deprel}' defined in standard is not"
             " mentioned in settings."
         )
-        if len(subtypes) > 0 and len(sett_deprels[stan_deprel]) > 0:
+        if (
+                not allow_partial_underspecification
+                and len(subtypes) > 0
+                and len(sett_deprels[stan_deprel]) > 0):
             for subt in subtypes:
                 assert subt in sett_deprels[stan_deprel], (
                     f"Standard subtype '{subt}' for deprel '{stan_deprel}' "
@@ -80,15 +96,3 @@ def assert_settings(
                     "in settings despite more than one subtype being "
                     f"specified there: ({sett_deprels[stan_deprel]})"
                 )
-
-
-def _test_assert_settings():
-    import typed_settings as ts
-
-    stan = ts.load(
-        standards.DeprelStandard, appname="deprels",
-        config_files=["standards/EWT.toml"])
-    sett = ts.load(
-        settings.DepSettings, appname="deprels",
-        config_files=["settings/default.toml"])
-    assert_settings(sett, stan)

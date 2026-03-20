@@ -1,5 +1,6 @@
 from . import locs
 
+import tqdm
 import pathlib
 import conllu
 
@@ -45,6 +46,8 @@ def load_conllu(
         )
         name = conllu_files[0].stem
 
-    for tokenlist in parse_conllu(
-            name, dir=dir, suffix=suffix, encoding=encoding):
+    for tokenlist in tqdm.tqdm(
+            parse_conllu(
+                name, dir=dir, suffix=suffix, encoding=encoding),
+            desc="Loading conllu"):
         yield tokenlist

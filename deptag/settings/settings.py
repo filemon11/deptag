@@ -1,6 +1,11 @@
+from . import standards
+from .. import data
+
 import typed_settings as ts
 import dataclasses
 import pathlib
+
+from typing import Literal
 
 SETTINGS_DIR = pathlib.Path("settings/")
 DEFAULT_SETTINGS = "default"
@@ -8,10 +13,37 @@ DEFAULT_SETTINGS = "default"
 
 
 @dataclasses.dataclass(frozen=True)
+class FileSettings:
+    conllu_file: str
+    split: None | Literal["train", "test", "dev"]
+    output_file: str
+    standard: str = "default"
+    standards_dir: str = str(standards.STANDARDS_DIR)
+    standard_from_xml: bool = False
+    save_standard_from_xml_dir: str = str(standards.STANDARDS_DIR)
+    allow_partial_underspecification: bool = True
+    save_standard_from_xml: bool = True
+    ud_folder: str = str(data.UD_DIR)
+    data_folder: str = str(data.DATA_DIR)
+
+
+@dataclasses.dataclass(frozen=True)
 class DepSettings:
     arguments: tuple[str, ...]
     adjuncts: tuple[str, ...]
     delete: tuple[str, ...]
+    labelled: bool
+    subtypes: bool
+    order_relations: bool = True
+    merged: None | dict[str, list[str]] = None
+    merged_fallback_subtypes: bool = True
+    distinguish_merged_fallback_subtypes: bool = True
+
+
+@dataclasses.dataclass(frozen=True)
+class Settings:
+    deprels: DepSettings
+    file: FileSettings
 
 
 # Settings loading
@@ -19,7 +51,7 @@ class DepSettings:
 def load_settings(
         name: str = DEFAULT_SETTINGS,
         *, dir: pathlib.Path = SETTINGS_DIR
-        ) -> DepSettings:
+        ) -> Settings:
     return ts.load(
-        DepSettings, appname="deprels",
+        Settings, appname="deptag",
         config_files=[dir / f"{name}.toml"])

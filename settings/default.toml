@@ -1,4 +1,21 @@
-[deprels]
-arguments = [ "nsubj", "obj", "iobj", "csubj", "ccomp", "xcomp", "obl:agent" ]
-adjuncts = [ "obl", "obl:unmarked", "expl", "vocative", "dislocated", "advcl", "advmod", "discourse", "aux", "cop", "mark", "nmod", "appos", "nummod", "acl", "amod", "det", "case", "conj", "cc", "fixed", "flat", "list", "parataxis", "compound", "orphan", "goeswith", "reparandum", "punct", "dep"]
+[deptag]
+[deptag.deprels]
+arguments = [ "nsubj", "obj", "iobj", "csubj", "ccomp", "xcomp", "fixed", "obl:agent" ]
+adjuncts = [ "obl", "expl", "vocative", "dislocated", "advcl", "advmod", "discourse", "aux", "cop", "mark", "nmod", "appos", "nummod", "acl", "amod", "det", "case", "conj", "cc", "flat", "list", "parataxis", "compound", "orphan", "goeswith", "reparandum", "punct", "dep" ]
 delete = [ "root" ]
+
+labelled = true
+subtypes = true
+order_relations = false
+
+[deptag.deprels.merged]
+subj = [ "nsubj", "csubj" ]
+obj = [ "obj", "iobj" ]
+comp = [ "ccomp", "xcomp" ]
+mod = [ "advmod", "advcl", "nmod", "nummod", "amod" ]
+
+[deptag.file]
+conllu_file = "English-EWT"
+split = "train"
+output_file = "English-EWT-tagged"
+standard_from_xml = true

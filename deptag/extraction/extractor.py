@@ -1,12 +1,16 @@
-import conllu
 from .. import data
 from ..data import locs
+
+import conllu
+import tqdm
+
 import pathlib
 import dataclasses
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 from typing import (
-    Sequence, Collection, Iterable, Generator, Mapping, DefaultDict)
+    Sequence, Collection, Iterable,
+    Generator, Mapping, DefaultDict)
 
 # extract function
 # for each sentence:
@@ -26,13 +30,38 @@ def collect_relations(
         arguments: Collection[str],
         adjuncts: Collection[str],
         delete: Collection[str] = tuple(),
+        merged: Mapping[str, Collection[str]] | None = None,
         *,
         without_labels: bool = False,
-        distinguish_fallback_subtypes: bool = True
+        distinguish_fallback_subtypes: bool = True,
+        merged_fallback_subtypes: bool = True,
+        distinguish_merged_fallback_subtypes: bool = True
         ) -> list[RawTag]:
     # Returns [([(daughter_position, label), ...],
     # (head_position, label) | None), ...]
     # ignores multiwords
+    deprel: str
+
+    deprel_to_new: dict[str, str] | None = None
+    if merged is not None:
+        deprel_to_new = {}
+        for new, deprel_list in merged.items():
+            for deprel in deprel_list:
+                deprel_to_new[deprel] = new
+
+    def deprel_merge(deprel: str) -> str:
+        if deprel_to_new is not None:
+            if deprel in deprel_to_new:
+                return deprel_to_new[deprel]
+            elif merged_fallback_subtypes and data.has_subtype(
+                    deprel) and data.split_main_sub(
+                        deprel)[0] in deprel_to_new:
+                main_type, subtype = data.split_main_sub(deprel)
+                main_type = deprel_to_new[main_type]
+                if distinguish_merged_fallback_subtypes:
+                    return f"{main_type}:{subtype}"
+                return main_type
+        return deprel
 
     daughters: list[list[RawArc]] = [[] for _ in sentence]
     heads: list[RawArc | None] = [None]*len(sentence)
@@ -44,13 +73,14 @@ def collect_relations(
         proper_item_num += 1
         token_id: int = token["id"]-1
         head_id: int = token["head"]-1
-        deprel: str = token["deprel"]
+        deprel = token["deprel"]
+
         if deprel in arguments:
             daughters[head_id].append(
-                (token_id, "" if without_labels else deprel))
+                (token_id, "" if without_labels else deprel_merge(deprel)))
         elif deprel in adjuncts:
             heads[token_id] = (
-                head_id, "" if without_labels else deprel)
+                head_id, "" if without_labels else deprel_merge(deprel))
         elif deprel in delete:
             pass
         elif data.has_subtype(deprel):
@@ -61,10 +91,10 @@ def collect_relations(
             # TODO: give info about this if successful
             if deprel_main in arguments:
                 daughters[head_id].append(
-                    (token_id, "" if without_labels else deprel))
+                    (token_id, "" if without_labels else deprel_merge(deprel)))
             elif deprel_main in adjuncts:
                 heads[token_id] = (
-                    head_id, "" if without_labels else deprel)
+                    head_id, "" if without_labels else deprel_merge(deprel))
             elif deprel_main in delete:
                 pass
             else:
@@ -76,7 +106,6 @@ def collect_relations(
             raise Exception(
                 f"dependency relation '{deprel}' "
                 "found in data but not known to settings.")
-
     return list(zip(daughters, heads, range(proper_item_num)))
 
 
@@ -84,10 +113,31 @@ RelativeTag = Sequence[tuple[bool | None, str]]
 
 
 def convert_raw_relation_to_relative(
-        tag: RawTag,) -> RelativeTag:
+        tag: RawTag,
+        *,
+        order_relations: bool = True
+        ) -> RelativeTag:
     head: RawArc | None = tag[1]
     anchor_id: int | None = tag[2]
     daughters = tag[0]
+
+    if not order_relations:
+        assert anchor_id is not None
+        left_rels: list[tuple[bool, str]] = []
+        right_rels: list[tuple[bool, str]] = []
+        for daughter_id, daughter_label in daughters:
+            if daughter_id < anchor_id:
+                left_rels.append((True, daughter_label))
+            else:
+                right_rels.append((True, daughter_label))
+        left_rels.sort(key=lambda x: x[1])
+        right_rels.sort(key=lambda x: x[1])
+        if head is not None:
+            if head[0] < anchor_id:
+                left_rels.append((False, head[1]))
+            else:
+                right_rels.insert(0, (False, head[1]))
+        return tuple(left_rels) + ((None, ""),) + tuple(right_rels)
 
     relative_tag: list[tuple[bool | None, str]] = []
     for daughter_id, daughter_label in daughters:
@@ -97,7 +147,7 @@ def convert_raw_relation_to_relative(
                 head = None
             relative_tag.append((None, ""))
             anchor_id = None
-        elif head is not None and head[0] < daughter_id:
+        if head is not None and head[0] < daughter_id:
             if anchor_id is not None and anchor_id < head[0]:
                 relative_tag.append((None, ""))
                 anchor_id = None
@@ -110,7 +160,7 @@ def convert_raw_relation_to_relative(
             head = None
         relative_tag.append((None, ""))
         anchor_id = None
-    elif head is not None:
+    if head is not None:
         if anchor_id is not None and anchor_id < head[0]:
             relative_tag.append((None, ""))
             anchor_id = None
@@ -145,6 +195,38 @@ class Statistics():
     num_instances: int
     perc_instances_unicorn: float
     perc_unicorn: float
+    avg_instances_per_supertag: float
+
+    def __add__(self, other: "Statistics") -> "Statistics":
+        unicorns = self.unicorns | other.unicorns - self.unicorns.intersection(
+            other.unicorns)
+        supertags = self.supertags | other.supertags
+        num_supertags = len(supertags)
+        num_unicorns = len(unicorns)
+        num_instances = self.num_instances+other.num_instances
+        return Statistics(
+            num_supertags=self.num_supertags + other.num_supertags,
+            supertags=supertags,
+            supertag_to_nums=Counter(self.supertag_to_nums) + Counter(
+                other.supertag_to_nums),
+            num_unicorns=num_unicorns,
+            unicorns=unicorns,
+            num_instances=num_instances,
+            perc_instances_unicorn=num_unicorns/num_instances,
+            perc_unicorn=len(unicorns)/len(supertags),
+            avg_instances_per_supertag=num_instances/num_supertags
+        )
+
+
+def print_statistics(statistics: Statistics):
+    print(f"Number of instances: {statistics.num_instances}")
+    print(f"Number of supertags: {statistics.num_supertags}")
+    print(
+        "Average number of instances per supertag: "
+        f"{round(statistics.avg_instances_per_supertag, 2)}")
+    print(
+        "Number of supertags with only one occurrence: "
+        f"{statistics.num_unicorns}")
 
 
 def extract(
@@ -152,9 +234,13 @@ def extract(
         arguments: Collection[str],
         adjuncts: Collection[str],
         delete: Collection[str] = tuple(),
+        merged: None | Mapping[str, Collection[str]] = None,
         *,
         without_labels: bool = False,
-        distinguish_fallback_subtypes: bool = True
+        distinguish_fallback_subtypes: bool = True,
+        merged_fallback_subtypes: bool = True,
+        distinguish_merged_fallback_subtypes: bool = True,
+        order_relations: bool = True,
         ) -> Generator[
             tuple[
                 list[RawTag], list[RelativeTag],
@@ -162,14 +248,20 @@ def extract(
             None, Statistics]:
 
     supertag_to_nums: DefaultDict[str, int] = defaultdict(int)
-    for sentence in sentences:
+    for sentence in tqdm.tqdm(
+            sentences, desc="Extracting supertags"):
         raw_relations = collect_relations(
             sentence, arguments, adjuncts, delete,
+            merged,
             without_labels=without_labels,
-            distinguish_fallback_subtypes=distinguish_fallback_subtypes
+            distinguish_fallback_subtypes=distinguish_fallback_subtypes,
+            merged_fallback_subtypes=merged_fallback_subtypes,
+            distinguish_merged_fallback_subtypes=(
+                distinguish_merged_fallback_subtypes),
         )
         relative_relations: list[RelativeTag] = [
-            convert_raw_relation_to_relative(rel) for rel in raw_relations]
+            convert_raw_relation_to_relative(
+                rel, order_relations=order_relations) for rel in raw_relations]
         string_relations: list[str] = [
             convert_relative_relation_to_string(rel)
             for rel in relative_relations]
@@ -199,7 +291,8 @@ def extract(
         num_unicorns=len(unicorns),
         num_instances=num_instances,
         perc_instances_unicorn=len(unicorns)/num_instances,
-        perc_unicorn=len(unicorns)/len(supertag_to_nums)
+        perc_unicorn=len(unicorns)/len(supertag_to_nums),
+        avg_instances_per_supertag=num_instances/len(supertag_to_nums)
     )
 
 
@@ -209,15 +302,24 @@ def extract_and_write(
         arguments: Collection[str],
         adjuncts: Collection[str],
         delete: Collection[str] = tuple(),
+        merged: Mapping[str, Collection[str]] | None = None,
         *,
         dir: pathlib.Path = locs.DATA_DIR,
         without_labels: bool = False,
-        distinguish_fallback_subtypes: bool = True
+        distinguish_fallback_subtypes: bool = True,
+        merged_fallback_subtypes: bool = True,
+        distinguish_merged_fallback_subtypes: bool = True,
+        order_relations: bool = True,
         ) -> Statistics:
     extractor = iter(extract(
-        sentences, arguments, adjuncts, delete,
+        sentences, arguments, adjuncts, delete, merged,
         without_labels=without_labels,
-        distinguish_fallback_subtypes=distinguish_fallback_subtypes)
+        distinguish_fallback_subtypes=distinguish_fallback_subtypes,
+        merged_fallback_subtypes=merged_fallback_subtypes,
+        distinguish_merged_fallback_subtypes=(
+            distinguish_merged_fallback_subtypes),
+        order_relations=order_relations,
+        )
     )
     writer = data.write_incr(
         file_name, dir=dir
@@ -227,5 +329,7 @@ def extract_and_write(
         while True:
             extracted_sent = next(extractor)
             writer.send(extracted_sent[3])
+        # never happens; just for type-checker.
+        # The StopIteration is thrown by extractor
     except StopIteration as e:
         return e.value
