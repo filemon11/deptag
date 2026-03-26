@@ -196,16 +196,38 @@ class Statistics():
     perc_instances_unicorn: float
     perc_unicorn: float
     avg_instances_per_supertag: float
+    word_to_supertag_to_nums: Mapping[str, Mapping[str, int]]
+    word_to_supertag_to_nums_unicorn: Mapping[str, Mapping[str, int]]
 
     def __add__(self, other: "Statistics") -> "Statistics":
-        unicorns = self.unicorns | other.unicorns - self.unicorns.intersection(
-            other.unicorns)
+        supertag_to_nums = Counter(self.supertag_to_nums) + Counter(
+            other.supertag_to_nums)
+        unicorns = {
+            supertag for supertag, num in supertag_to_nums.items() if num == 1}
         supertags = self.supertags | other.supertags
         num_supertags = len(supertags)
         num_unicorns = len(unicorns)
         num_instances = self.num_instances+other.num_instances
+        word_to_supertag_to_nums: dict[str, Mapping[str, int]] = {}
+        self_keys = set(self.word_to_supertag_to_nums.keys())
+        other_keys = set(other.word_to_supertag_to_nums.keys())
+        common_keys = self_keys.intersection(other_keys)
+        for key in common_keys:
+            word_to_supertag_to_nums[key] = Counter(
+                self.word_to_supertag_to_nums[key]) + Counter(
+                    other.word_to_supertag_to_nums[key])
+        for key in self_keys - common_keys:
+            word_to_supertag_to_nums[key] = self.word_to_supertag_to_nums[key]
+        for key in other_keys - common_keys:
+            word_to_supertag_to_nums[key] = other.word_to_supertag_to_nums[key]
+
+        word_to_supertag_to_nums_unicorn = {
+            supertag: sup2nums for supertag, sup2nums
+            in word_to_supertag_to_nums.items()
+            if any([sup in unicorns for sup in sup2nums.keys()])}
+
         return Statistics(
-            num_supertags=self.num_supertags + other.num_supertags,
+            num_supertags=len(supertags),
             supertags=supertags,
             supertag_to_nums=Counter(self.supertag_to_nums) + Counter(
                 other.supertag_to_nums),
@@ -214,7 +236,9 @@ class Statistics():
             num_instances=num_instances,
             perc_instances_unicorn=num_unicorns/num_instances,
             perc_unicorn=len(unicorns)/len(supertags),
-            avg_instances_per_supertag=num_instances/num_supertags
+            avg_instances_per_supertag=num_instances/num_supertags,
+            word_to_supertag_to_nums=word_to_supertag_to_nums,
+            word_to_supertag_to_nums_unicorn=word_to_supertag_to_nums_unicorn
         )
 
 
@@ -248,6 +272,9 @@ def extract(
             None, Statistics]:
 
     supertag_to_nums: DefaultDict[str, int] = defaultdict(int)
+    word_to_supertag_to_nums: dict[str, DefaultDict[str, int]]
+    word_to_supertag_to_nums = defaultdict(lambda: defaultdict(int))
+
     for sentence in tqdm.tqdm(
             sentences, desc="Extracting supertags"):
         raw_relations = collect_relations(
@@ -278,11 +305,19 @@ def extract(
             else:
                 token["misc"] = {"supertag": string}
 
+            # Associate supertags with word dict
+            word_to_supertag_to_nums[token["form"]][string] += 1
+
         yield (raw_relations, relative_relations, string_relations, sentence)
 
     unicorns = {
         supertag for supertag, num in supertag_to_nums.items() if num == 1}
     num_instances = sum(supertag_to_nums.values())
+
+    word_to_supertag_to_nums_unicorn = {
+        supertag: sup2nums for supertag, sup2nums
+        in word_to_supertag_to_nums.items()
+        if any([sup in unicorns for sup in sup2nums.keys()])}
     return Statistics(
         supertag_to_nums=supertag_to_nums,
         supertags=set(supertag_to_nums.keys()),
@@ -292,7 +327,9 @@ def extract(
         num_instances=num_instances,
         perc_instances_unicorn=len(unicorns)/num_instances,
         perc_unicorn=len(unicorns)/len(supertag_to_nums),
-        avg_instances_per_supertag=num_instances/len(supertag_to_nums)
+        avg_instances_per_supertag=num_instances/len(supertag_to_nums),
+        word_to_supertag_to_nums=word_to_supertag_to_nums,
+        word_to_supertag_to_nums_unicorn=word_to_supertag_to_nums_unicorn
     )
 
 
@@ -333,3 +370,155 @@ def extract_and_write(
         # The StopIteration is thrown by extractor
     except StopIteration as e:
         return e.value
+
+
+def replace_unicorns_and_write(
+        sentences: Iterable[conllu.TokenList],
+        unicorns: Collection[str],
+        file_name: str,
+        *,
+        dir: pathlib.Path = locs.DATA_DIR,
+        ) -> Statistics:
+    extractor = read(
+        sentences,
+        replace_labels_supertags=unicorns)
+    writer = data.write_incr(
+        file_name, dir=dir
+    )
+    try:
+        writer.send(None)  # type: ignore
+        while True:
+            extracted_sent = next(extractor)
+            writer.send(extracted_sent[2])
+        # never happens; just for type-checker.
+        # The StopIteration is thrown by extractor
+    except StopIteration as e:
+        return e.value
+
+
+def read_relation(token: conllu.Token) -> str:
+    assert token["misc"] is not None
+    assert "supertag" in token["misc"]
+    return token["misc"]["supertag"]
+
+
+def get_string_relations(sentence: conllu.TokenList) -> list[str]:
+    return [
+        read_relation(token) for token in sentence if not isinstance(
+            token["id"], tuple
+        )]
+
+
+def get_type(string: str) -> bool | None:
+    match string:
+        case "+":
+            return True
+        case "-":
+            return False
+        case "*":
+            return None
+        case _:
+            raise TypeError(f"Relation type {string} unknown.")
+
+
+def convert_string_to_relative_relation(relation: str) -> RelativeTag:
+    relative_list: list[tuple[bool | None, str]] = list()
+    current_item: str = ""
+    current_type: None | bool = get_type(relation[0])
+    for char in relation[1:]:
+        try:
+            new_type = get_type(char)
+            relative_list.append((current_type, current_item))
+            current_type = new_type
+            current_item = ""
+        except TypeError:
+            current_item += char
+    relative_list.append((current_type, current_item))
+    return relative_list
+
+
+def read(
+        sentences: Iterable[conllu.TokenList],
+        *,
+        replace_labels_supertags: Collection[str] | None,
+        fill_label: str = "dep"
+        ) -> Generator[
+            tuple[
+                list[RelativeTag],
+                list[str], conllu.TokenList],
+            None, Statistics]:
+
+    supertag_to_nums: DefaultDict[str, int] = defaultdict(int)
+    word_to_supertag_to_nums: dict[str, DefaultDict[str, int]]
+    word_to_supertag_to_nums = defaultdict(lambda: defaultdict(int))
+
+    for sentence in tqdm.tqdm(
+            sentences, desc="Extracting supertags"):
+        string_relations: list[str] = get_string_relations(sentence)
+        relative_relations: list[RelativeTag] = [
+            convert_string_to_relative_relation(
+                rel) for rel in string_relations]
+
+        if replace_labels_supertags is not None:
+            new_relative_relations: list[RelativeTag] = []
+            for str_relation, rel_relation in zip(
+                    string_relations, relative_relations):
+                if str_relation in replace_labels_supertags:
+                    new_relative_relations.append(
+                        replace_labels(
+                            rel_relation, fill_label)
+                    )
+                else:
+                    new_relative_relations.append(rel_relation)
+            relative_relations = new_relative_relations
+            string_relations = [
+                convert_relative_relation_to_string(tag) for tag
+                in relative_relations
+            ]
+
+        sentence_iter = iter(sentence)
+        for string in string_relations:
+            supertag_to_nums[string] += 1
+
+            token = next(sentence_iter)
+            while isinstance(token["id"], tuple):
+                token = next(sentence_iter)
+            token["misc"]["supertag"] = string
+
+            # Associate supertags with word dict
+            word_to_supertag_to_nums[token["form"]][string] += 1
+
+        yield (relative_relations, string_relations, sentence)
+
+    unicorns = {
+        supertag for supertag, num in supertag_to_nums.items() if num == 1}
+    num_instances = sum(supertag_to_nums.values())
+    word_to_supertag_to_nums_unicorn = {
+        supertag: sup2nums for supertag, sup2nums
+        in word_to_supertag_to_nums.items()
+        if any([sup in unicorns for sup in sup2nums.keys()])}
+    return Statistics(
+        supertag_to_nums=supertag_to_nums,
+        supertags=set(supertag_to_nums.keys()),
+        num_supertags=len(supertag_to_nums),
+        unicorns=unicorns,
+        num_unicorns=len(unicorns),
+        num_instances=num_instances,
+        perc_instances_unicorn=len(unicorns)/num_instances,
+        perc_unicorn=len(unicorns)/len(supertag_to_nums),
+        avg_instances_per_supertag=num_instances/len(supertag_to_nums),
+        word_to_supertag_to_nums=word_to_supertag_to_nums,
+        word_to_supertag_to_nums_unicorn=word_to_supertag_to_nums_unicorn
+    )
+
+
+def replace_labels(
+        relative_tag: RelativeTag,
+        fill_label: str = "dep") -> RelativeTag:
+    new_tag: list[tuple[bool | None, str]] = []
+    for relation in relative_tag:
+        if relation[0] is None:
+            new_tag.append(relation)
+        else:
+            new_tag.append((relation[0], fill_label))
+    return new_tag
