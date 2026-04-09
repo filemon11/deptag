@@ -8,7 +8,7 @@ import pathlib
 import conllu
 from . import extractor
 
-from typing import MutableMapping, Collection, Iterable
+from typing import MutableMapping, Collection, Iterable, Mapping, Literal
 
 
 def set_arrow_direction(word_line):
@@ -120,4 +120,80 @@ def unicorn_plot_pipeline(
                     tokenlist_to_svg(sentence),
                     f"{i}_{uni}.svg",
                     dir)
+        yield sentence
+
+
+def relation_plot_pipeline(
+        sentences: Iterable[conllu.TokenList],
+        dir: pathlib.Path,
+        daughter_upos: Collection[str] | None = None,
+        daughter_features: Mapping[str, str] | None = {"VerbForm": "Fin"},
+        deprel_types: Collection[str] | None = ["compound"],
+        head_upos: Collection[str] | None = ["NOUN"],
+        head_features: Mapping[str, str] | None = None,
+        direction: Literal["+", "-"] | None = None,
+        explicit: bool = False,
+        ) -> Iterable[conllu.TokenList]:
+    for i, sentence in enumerate(sentences):
+        sentence_ = sentence.filter(id=lambda x: type(x) is int)
+        for word in sentence_:
+            if deprel_types is not None and (
+                    word["deprel"] if explicit else
+                    word["deprel"].split(":")[0]) not in deprel_types:
+                continue
+
+            if daughter_upos is not None and word["upos"] not in daughter_upos:
+                continue
+            if daughter_features is not None:
+                if "feats" not in word.keys() or word["feats"] is None:
+                    continue
+                cont = False
+                for df in daughter_features.keys():
+                    if df not in word["feats"]:
+                        cont = True
+                        break
+                    if daughter_features[df] != word["feats"][df]:
+                        cont = True
+                        break
+                if cont:
+                    continue
+
+            head_id = word["head"]
+            if head_id == 0:
+                continue
+
+            else:
+                head_id -= 1
+
+            head = sentence_[head_id]
+
+            if head_upos is not None and head[
+                    "upos"].split(":")[0] not in head_upos:
+                continue
+            if head_features is not None:
+                if "feats" not in head.keys() or head["feats"] is None:
+                    continue
+                cont = False
+                for df in head_features.keys():
+                    if df not in head["feats"]:
+                        cont = True
+                        break
+                    if head_features[df] != head["feats"][df]:
+                        cont = True
+                        break
+                if cont:
+                    continue
+
+            if direction is not None:
+                if direction == "+" and head_id+1 < word["id"]:
+                    continue
+                elif direction == "-" and head_id+1 > word["id"]:
+                    continue
+
+            plot_svg(
+                tokenlist_to_svg(sentence_),
+                f"{i}_{word["form"].replace("/", "-")}.svg",
+                dir)
+            break
+
         yield sentence

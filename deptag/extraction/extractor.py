@@ -198,6 +198,19 @@ class Statistics():
     avg_instances_per_supertag: float
     word_to_supertag_to_nums: Mapping[str, Mapping[str, int]]
     word_to_supertag_to_nums_unicorn: Mapping[str, Mapping[str, int]]
+    num_adjunct: int
+    num_initial: int
+    avg_num_edges: float
+    avg_supertags_per_type: float
+    labels: set[str]
+    occurrences_per_label: Mapping[str, int]
+    avg_occurrences_per_label: float
+    avg_left_args: float
+    avg_right_args: float
+    num_left_adjuncts: int
+    num_right_adjuncts: int
+    num_strict_left_adjuncts: int
+    num_strict_right_adjuncts: int
 
     def __add__(self, other: "Statistics") -> "Statistics":
         supertag_to_nums = Counter(self.supertag_to_nums) + Counter(
@@ -226,11 +239,56 @@ class Statistics():
             in word_to_supertag_to_nums.items()
             if any([sup in unicorns for sup in sup2nums.keys()])}
 
+        num_adjunct = len(
+            [tag for tag in supertag_to_nums.keys() if "-" in tag])
+        num_initial = len(supertag_to_nums) - num_adjunct
+
+        avg_num_edges = sum([
+            tag.count("+")+tag.count("-") for tag in supertag_to_nums.keys()
+            ]) / len(supertag_to_nums)
+
+        avg_supertags_per_type = sum([
+            len(supertag_to_nums) for supertag_to_nums
+            in word_to_supertag_to_nums.values()
+            ]) / len(word_to_supertag_to_nums)
+
+        labels = self.labels | other.labels
+        occurrences_per_label = Counter(
+            self.occurrences_per_label) + Counter(
+                other.occurrences_per_label
+            )
+
+        avg_occurrences_per_label = sum(
+            occurrences_per_label.values()) / len(occurrences_per_label)
+
+        avg_left_args = sum(
+            [tag.split("*")[0].count("+") for tag in supertag_to_nums.keys()]
+            ) / len(supertag_to_nums)
+        avg_right_args = sum(
+            [tag.split("*")[1].count("+") for tag in supertag_to_nums.keys()]
+            ) / len(supertag_to_nums)
+
+        num_left_adjuncts = len([
+            tag for tag in supertag_to_nums.keys()
+            if "-" in tag.split("*")[1]
+        ])
+        num_right_adjuncts = len([
+            tag for tag in supertag_to_nums.keys()
+            if "-" in tag.split("*")[0]
+        ])
+        num_strict_left_adjuncts = len([
+            tag for tag in supertag_to_nums.keys()
+            if "-" in tag.split("*")[1].split("+")[-1]
+        ])
+        num_strict_right_adjuncts = len([
+            tag for tag in supertag_to_nums.keys()
+            if "-" in tag.split("*")[0].split("+")[0]
+        ])
+
         return Statistics(
             num_supertags=len(supertags),
             supertags=supertags,
-            supertag_to_nums=Counter(self.supertag_to_nums) + Counter(
-                other.supertag_to_nums),
+            supertag_to_nums=supertag_to_nums,
             num_unicorns=num_unicorns,
             unicorns=unicorns,
             num_instances=num_instances,
@@ -238,19 +296,84 @@ class Statistics():
             perc_unicorn=len(unicorns)/len(supertags),
             avg_instances_per_supertag=num_instances/num_supertags,
             word_to_supertag_to_nums=word_to_supertag_to_nums,
-            word_to_supertag_to_nums_unicorn=word_to_supertag_to_nums_unicorn
+            word_to_supertag_to_nums_unicorn=word_to_supertag_to_nums_unicorn,
+            num_adjunct=num_adjunct,
+            num_initial=num_initial,
+            avg_num_edges=avg_num_edges,
+            avg_supertags_per_type=avg_supertags_per_type,
+            labels=labels,
+            occurrences_per_label=occurrences_per_label,
+            avg_occurrences_per_label=avg_occurrences_per_label,
+            avg_left_args=avg_left_args,
+            avg_right_args=avg_right_args,
+            num_left_adjuncts=num_left_adjuncts,
+            num_right_adjuncts=num_right_adjuncts,
+            num_strict_left_adjuncts=num_strict_left_adjuncts,
+            num_strict_right_adjuncts=num_strict_right_adjuncts,
         )
 
 
 def print_statistics(statistics: Statistics):
-    print(f"Number of instances: {statistics.num_instances}")
-    print(f"Number of supertags: {statistics.num_supertags}")
+    print(f"# instances: {statistics.num_instances}")
+    print(f"# supertags: {statistics.num_supertags}")
     print(
-        "Average number of instances per supertag: "
+        "avg instances per supertag: "
         f"{round(statistics.avg_instances_per_supertag, 2)}")
     print(
-        "Number of supertags with only one occurrence: "
+        "# supertags occurring once: "
         f"{statistics.num_unicorns}")
+    print(
+        "-> % of supertags:",
+        statistics.perc_unicorn
+    )
+    print(
+        "-> % of instances:",
+        statistics.perc_instances_unicorn
+    )
+    print(
+        "# initial trees:",
+        statistics.num_initial
+    )
+    print(
+        "# adjunct trees:",
+        statistics.num_adjunct
+    )
+    print(
+        "avg # edges per supertag:",
+        statistics.avg_num_edges
+    )
+    print(
+        "# supertags per type:",
+        statistics.avg_supertags_per_type
+    )
+    print(
+        "avg # of occurrences per dep label:",
+        statistics.avg_occurrences_per_label
+    )
+    print(
+        "avg # of args preceding head:",
+        statistics.avg_left_args
+    )
+    print(
+        "avg # of args following head:",
+        statistics.avg_right_args
+    )
+    print(
+        "# of left adjoining adjunct trees:",
+        statistics.num_left_adjuncts
+    )
+    print(
+        "# of right adjoining adjunct trees:",
+        statistics.num_right_adjuncts
+    )
+    print(
+        "# of strict left adjoining adjunct trees:",
+        statistics.num_strict_left_adjuncts
+    )
+    print(
+        "# of strict right adjoining adjunct trees:",
+        statistics.num_strict_right_adjuncts
+    )
 
 
 def extract(
@@ -274,6 +397,9 @@ def extract(
     supertag_to_nums: DefaultDict[str, int] = defaultdict(int)
     word_to_supertag_to_nums: dict[str, DefaultDict[str, int]]
     word_to_supertag_to_nums = defaultdict(lambda: defaultdict(int))
+
+    relative_tags: set[RelativeTag] = set()
+    occurrences_per_label: DefaultDict[str, int] = defaultdict(int)
 
     for sentence in tqdm.tqdm(
             sentences, desc="Extracting supertags"):
@@ -308,6 +434,12 @@ def extract(
             # Associate supertags with word dict
             word_to_supertag_to_nums[token["form"]][string] += 1
 
+        relative_tags |= set(relative_relations)
+        for rel in relative_relations:
+            for tag in rel:
+                if tag[1] != "":
+                    occurrences_per_label[tag[1]] += 1
+
         yield (raw_relations, relative_relations, string_relations, sentence)
 
     unicorns = {
@@ -318,6 +450,48 @@ def extract(
         supertag: sup2nums for supertag, sup2nums
         in word_to_supertag_to_nums.items()
         if any([sup in unicorns for sup in sup2nums.keys()])}
+
+    num_adjunct = len([tag for tag in supertag_to_nums.keys() if "-" in tag])
+    num_initial = len(supertag_to_nums) - num_adjunct
+
+    avg_num_edges = sum([
+        tag.count("+")+tag.count("-") for tag in supertag_to_nums.keys()
+    ]) / len(supertag_to_nums)
+
+    avg_supertags_per_type = sum(
+        [len(supertag_to_nums) for supertag_to_nums
+         in word_to_supertag_to_nums.values()]) / len(word_to_supertag_to_nums)
+
+    labels = {
+        rel[1] for tag in relative_tags for rel in tag if not rel[1] == ""}
+    avg_occurrences_per_label = sum(
+        occurrences_per_label.values()) / len(occurrences_per_label)
+
+    avg_left_args = sum(
+        [tag.split("*")[0].count("+") for tag in supertag_to_nums.keys()]
+        ) / len(supertag_to_nums)
+    avg_right_args = sum(
+        [tag.split("*")[1].count("+") for tag in supertag_to_nums.keys()]
+        ) / len(supertag_to_nums)
+
+    num_left_adjuncts = len([
+        tag for tag in supertag_to_nums.keys()
+        if "-" in tag.split("*")[1]
+    ])
+    num_right_adjuncts = len([
+        tag for tag in supertag_to_nums.keys()
+        if "-" in tag.split("*")[0]
+    ])
+
+    num_strict_left_adjuncts = len([
+        tag for tag in supertag_to_nums.keys()
+        if "-" in tag.split("*")[1].split("+")[-1]
+    ])
+    num_strict_right_adjuncts = len([
+        tag for tag in supertag_to_nums.keys()
+        if "-" in tag.split("*")[0].split("+")[0]
+    ])
+
     return Statistics(
         supertag_to_nums=supertag_to_nums,
         supertags=set(supertag_to_nums.keys()),
@@ -329,7 +503,20 @@ def extract(
         perc_unicorn=len(unicorns)/len(supertag_to_nums),
         avg_instances_per_supertag=num_instances/len(supertag_to_nums),
         word_to_supertag_to_nums=word_to_supertag_to_nums,
-        word_to_supertag_to_nums_unicorn=word_to_supertag_to_nums_unicorn
+        word_to_supertag_to_nums_unicorn=word_to_supertag_to_nums_unicorn,
+        num_adjunct=num_adjunct,
+        num_initial=num_initial,
+        avg_num_edges=avg_num_edges,
+        avg_supertags_per_type=avg_supertags_per_type,
+        labels=labels,
+        occurrences_per_label=occurrences_per_label,
+        avg_occurrences_per_label=avg_occurrences_per_label,
+        avg_left_args=avg_left_args,
+        avg_right_args=avg_right_args,
+        num_left_adjuncts=num_left_adjuncts,
+        num_right_adjuncts=num_right_adjuncts,
+        num_strict_left_adjuncts=num_strict_left_adjuncts,
+        num_strict_right_adjuncts=num_strict_right_adjuncts,
     )
 
 
@@ -452,6 +639,9 @@ def read(
     word_to_supertag_to_nums: dict[str, DefaultDict[str, int]]
     word_to_supertag_to_nums = defaultdict(lambda: defaultdict(int))
 
+    relative_tags: set[RelativeTag] = set()
+    occurrences_per_label: DefaultDict[str, int] = defaultdict(int)
+
     for sentence in tqdm.tqdm(
             sentences, desc="Extracting supertags"):
         string_relations: list[str] = get_string_relations(sentence)
@@ -475,6 +665,11 @@ def read(
                 convert_relative_relation_to_string(tag) for tag
                 in relative_relations
             ]
+        relative_tags |= set(relative_tags)
+        for rel in relative_relations:
+            for tag in rel:
+                if tag[1] != "":
+                    occurrences_per_label[tag[1]] += 1
 
         sentence_iter = iter(sentence)
         for string in string_relations:
@@ -497,6 +692,47 @@ def read(
         supertag: sup2nums for supertag, sup2nums
         in word_to_supertag_to_nums.items()
         if any([sup in unicorns for sup in sup2nums.keys()])}
+    num_adjunct = len([tag for tag in supertag_to_nums.keys() if "-" in tag])
+    num_initial = len(supertag_to_nums) - num_adjunct
+
+    avg_num_edges = sum([
+        tag.count("+")+tag.count("-") for tag in supertag_to_nums.keys()
+    ]) / len(supertag_to_nums)
+
+    avg_supertags_per_type = sum(
+        [len(supertag_to_nums) for supertag_to_nums
+         in word_to_supertag_to_nums.values()]) / len(word_to_supertag_to_nums)
+
+    labels = {
+        rel[1] for tag in relative_tags for rel in tag if not rel[1] == ""}
+    avg_occurrences_per_label = sum(
+        occurrences_per_label.values()) / len(occurrences_per_label)
+
+    avg_left_args = sum(
+        [tag.split("*")[0].count("+") for tag in supertag_to_nums.keys()]
+        ) / len(supertag_to_nums)
+    avg_right_args = sum(
+        [tag.split("*")[1].count("+") for tag in supertag_to_nums.keys()]
+        ) / len(supertag_to_nums)
+
+    num_left_adjuncts = len([
+        tag for tag in supertag_to_nums.keys()
+        if "-" in tag.split("*")[1]
+    ])
+    num_right_adjuncts = len([
+        tag for tag in supertag_to_nums.keys()
+        if "-" in tag.split("*")[0]
+    ])
+
+    num_strict_left_adjuncts = len([
+        tag for tag in supertag_to_nums.keys()
+        if "-" in tag.split("*")[1].split("+")[-1]
+    ])
+    num_strict_right_adjuncts = len([
+        tag for tag in supertag_to_nums.keys()
+        if "-" in tag.split("*")[0].split("+")[0]
+    ])
+
     return Statistics(
         supertag_to_nums=supertag_to_nums,
         supertags=set(supertag_to_nums.keys()),
@@ -508,7 +744,20 @@ def read(
         perc_unicorn=len(unicorns)/len(supertag_to_nums),
         avg_instances_per_supertag=num_instances/len(supertag_to_nums),
         word_to_supertag_to_nums=word_to_supertag_to_nums,
-        word_to_supertag_to_nums_unicorn=word_to_supertag_to_nums_unicorn
+        word_to_supertag_to_nums_unicorn=word_to_supertag_to_nums_unicorn,
+        num_adjunct=num_adjunct,
+        num_initial=num_initial,
+        avg_num_edges=avg_num_edges,
+        avg_supertags_per_type=avg_supertags_per_type,
+        labels=labels,
+        occurrences_per_label=occurrences_per_label,
+        avg_occurrences_per_label=avg_occurrences_per_label,
+        avg_left_args=avg_left_args,
+        avg_right_args=avg_right_args,
+        num_left_adjuncts=num_left_adjuncts,
+        num_right_adjuncts=num_right_adjuncts,
+        num_strict_left_adjuncts=num_strict_left_adjuncts,
+        num_strict_right_adjuncts=num_strict_right_adjuncts,
     )
 
 

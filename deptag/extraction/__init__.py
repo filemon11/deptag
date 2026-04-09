@@ -3,4 +3,5 @@ from .extractor import (
     convert_relative_relation_to_string,
     extract_and_write, Statistics, print_statistics, read,
     replace_unicorns_and_write)
-from .treeplot import unicorn_plot_pipeline
+from .treeplot import unicorn_plot_pipeline, relation_plot_pipeline
+from .preparation import prepare, prepare_train

@@ -1,2 +1,2 @@
 from .manager import load_settings
-from .settings import Settings
+from .settings import Settings, TaggingSettings, ExtractSettings
