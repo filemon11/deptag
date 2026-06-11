@@ -196,18 +196,19 @@ def extract(sett: settings.ExtractSettings):
 
     stat_dict: dict[str, extraction.Statistics] = {}
     for corpus in (
-            "Bulgarian-BTB",
-            "Catalan-AnCora",
-            "Czech-PDTC",
-            "German-GSD",
-            "English-EWT",
-            "Spanish-AnCora",
-            "French-GSD",
-            "Italian-ISDT",
-            "Dutch-Alpino",
-            "Norwegian-Bokmaal",
-            "Romanian-RRT",
+            # "Bulgarian-BTB",
+            # "Catalan-AnCora",
+            # "Czech-PDTC",
+            # "German-GSD",
+            # "English-Atis",
+            # "Spanish-AnCora",
+            # "French-GSD",
+            # "Italian-ISDT",
+            # "Dutch-Alpino",
+            # "Norwegian-Bokmaal",
+            # "Romanian-RRT",
             "Russian-SynTagRus",
+            # "combined",
             ):
         print("Processing corpus:", corpus)
         sett = settings.load_settings("extract", settings_name=corpus)
@@ -216,6 +217,7 @@ def extract(sett: settings.ExtractSettings):
             replacement_threshold=0, plot_unicorn_sentences=True)
         stat_dict[corpus] = stat
         extraction.print_statistics(stat)
+        print(stat.supertags)
 
 
 if __name__ == "__main__":

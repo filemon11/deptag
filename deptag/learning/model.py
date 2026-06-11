@@ -9,19 +9,44 @@ from transformers import AutoModel
 
 # @torch.compile
 def calc_loss_helper(
-        logits, labels, attention_mask):
+        logits, labels, attention_mask, printinfo: bool = False):
     # shape: (batch_size, seq_len, num_tags) -> (batch_size, num_tags, seq_len)
     logits = torch.movedim(logits, -1, 1)
 
-    # Only keep active parts of the loss
-    active_labels = torch.where(
-        attention_mask, labels, -1
-    )
+    # # Only keep active parts of the loss
+    # active_labels = torch.where(
+    #     attention_mask, labels, -1
+    # )
 
-    print(active_labels)
+    loss = F.cross_entropy(
+        logits, labels, ignore_index=-1, reduction="mean")
 
-    loss = F.cross_entropy(logits, active_labels, ignore_index=-1)
+    logits_wo_ignore = logits.transpose(-1, -2)[labels != -1]
+    labels_wo_ignore = labels[labels != -1]
 
+    if printinfo:
+        logits_wo_ignore_mask = (
+            logits_wo_ignore.argmax(-1) == labels_wo_ignore)
+
+        # loss_wo_ignore = F.cross_entropy(
+        #     logits_wo_ignore, labels_wo_ignore, reduce="mean")
+        # print(loss, loss_wo_ignore)
+
+        logits_correct = logits_wo_ignore[logits_wo_ignore_mask]
+        labels_correct = labels_wo_ignore[logits_wo_ignore_mask]
+        loss_correct = F.cross_entropy(
+            logits_correct, labels_correct, reduction="mean")
+
+        logits_false = logits_wo_ignore[~logits_wo_ignore_mask]
+        labels_false = labels_wo_ignore[~logits_wo_ignore_mask]
+        loss_false = F.cross_entropy(
+            logits_false, labels_false, reduction="mean")
+
+        print("correct item loss:", loss_correct.item())
+        print("false item loss:", loss_false.item())
+        print("num correct items:", len(labels_correct))
+        print("num false items:", len(labels_false))
+        print("loss:", loss)
     return loss
 
 
@@ -36,6 +61,9 @@ class ModelForTagging(nn.Module):
 
         self.pos_emb_dim: int = config.task_specific_params['pos_emb_dim']
         self.dropout_rate: float = config.task_specific_params['dropout']
+
+        self.transformer_layers = config.task_specific_params[
+            "transformer_layers"]
 
         self.bert = AutoModel.from_pretrained(self.model_path, config=config)
         if self.use_pos:
@@ -55,23 +83,25 @@ class ModelForTagging(nn.Module):
         self.input_projection = nn.Linear(
             transformer_input_dim, config.hidden_size)
 
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=config.hidden_size,
-            nhead=config.task_specific_params["n_heads"],
-            dim_feedforward=config.task_specific_params.get(
-                "ffn_dim", 4 * config.hidden_size
-            ),
-            dropout=self.dropout_rate,
-            activation="gelu",
-            batch_first=True,   # input/output: (batch, seq, feature)
-            norm_first=True,
-        )
+        if self.transformer_layers > 0:
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=config.hidden_size,
+                nhead=config.task_specific_params["n_heads"],
+                dim_feedforward=config.task_specific_params.get(
+                    "ffn_dim", 4 * config.hidden_size
+                ),
+                dropout=self.dropout_rate,
+                activation="gelu",
+                batch_first=True,   # input/output: (batch, seq, feature)
+                norm_first=True,
+            )
 
-        self.transformer = nn.TransformerEncoder(
-            encoder_layer,
-            num_layers=config.task_specific_params["transformer_layers"],
-        )
+            self.transformer = nn.TransformerEncoder(
+                encoder_layer,
+                num_layers=config.task_specific_params["transformer_layers"],
+            )
 
+        self.dropout = nn.Dropout(self.dropout_rate)
         self.projection = nn.Sequential(
             nn.Linear(config.hidden_size, config.num_labels)
         )
@@ -87,6 +117,8 @@ class ModelForTagging(nn.Module):
             labels=None,
             output_attentions=None,
             output_hidden_states=None,
+            report_loss: bool = False,
+            printinfo: bool = False,
     ):
         outputs = self.bert(
             input_ids,
@@ -107,18 +139,21 @@ class ModelForTagging(nn.Module):
             dim=-1)
 
         token_repr = self.input_projection(token_repr)
-        padding_mask = attention_mask == 0
-        token_repr = self.transformer(
-            token_repr,
-            src_key_padding_mask=padding_mask
-        )
 
-        tag_logits = self.projection(token_repr)
+        if self.transformer_layers > 0:
+            padding_mask = attention_mask == 0
+            token_repr = self.transformer(
+                token_repr,
+                src_key_padding_mask=padding_mask
+            )
+
+        tag_logits = self.projection(self.dropout(token_repr))
 
         loss = None
-        if labels is not None and self.training:
+        if labels is not None and (self.training or report_loss):
             loss = calc_loss_helper(
                 tag_logits, labels, attention_mask.bool(),
+                printinfo=printinfo
             )
             return loss, tag_logits
         else:

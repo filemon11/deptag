@@ -4,27 +4,30 @@ import logging
 import tqdm
 
 
-def report_eval_loss(
-        model, eval_dataloader, device, n_iter, writer) -> float:
-    loss = []
-    for batch in eval_dataloader:
-        batch = {k: v.to(device) for k, v in batch.items()}
-        with torch.no_grad(), torch.amp.autocast(
-                "cpu" if device == torch.device("cpu") else "cuda",
-                enabled=True, dtype=torch.bfloat16):
-            outputs = model(**batch)
-            loss.append(torch.mean(outputs[0]).cpu())
+from typing import overload, Literal
 
-    mean_loss: float = np.mean(loss).item()
-    logging.info("Eval Loss: {}".format(mean_loss))
-    if writer is not None:
-        writer.add_scalar('eval_loss', mean_loss, n_iter)
-    return mean_loss
+
+
+@overload
+def predict(
+        model, eval_dataloader, dataset_size, num_tags, batch_size, device,
+        report_loss: Literal[True],
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ...
+
+
+@overload
+def predict(
+        model, eval_dataloader, dataset_size, num_tags, batch_size, device,
+        report_loss: Literal[False] = False,
+        ) -> tuple[np.ndarray, np.ndarray, None]:
+    ...
 
 
 def predict(
-        model, eval_dataloader, dataset_size, num_tags, batch_size, device
-        ) -> tuple[np.ndarray, np.ndarray]:
+        model, eval_dataloader, dataset_size, num_tags, batch_size, device,
+        report_loss: bool = False,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
 
     model.eval()
     predictions = []
@@ -32,6 +35,7 @@ def predict(
     max_len = 0
     idx = 0
 
+    losses = []
     for batch in tqdm.tqdm(eval_dataloader):
         batch = {k: v.to(device) for k, v in batch.items()}
 
@@ -39,7 +43,9 @@ def predict(
                 "cpu" if device == torch.device("cpu") else "cuda",
                 enabled=True, dtype=torch.bfloat16
                 ):
-            outputs = model(**batch)
+            outputs = model(
+                **batch, report_loss=report_loss,
+                printinfo=False)
 
         logits = outputs[1].float().cpu().numpy()
         max_len = max(max_len, logits.shape[1])
@@ -47,6 +53,8 @@ def predict(
         labels = batch['labels'].int().cpu().numpy()
         eval_labels.append(labels)
         idx += 1
+        if outputs[0] is not None:
+            losses.append(outputs[0].cpu().numpy())
 
     predictions_ = np.concatenate([
         np.pad(
@@ -56,14 +64,16 @@ def predict(
     eval_labels_ = np.concatenate([
         np.pad(
             labels, ((0, 0), (0, max_len - labels.shape[1])),
-            'constant', constant_values=0)
+            'constant', constant_values=-1)
         for labels in eval_labels], axis=0)
 
-    return predictions_, eval_labels_
+    if len(losses) == 0:
+        return predictions_, eval_labels_, None
+    return predictions_, eval_labels_, sum(losses)/len(losses)
 
 
 def calc_tag_accuracy(
-        predictions, eval_labels, writer, use_tensorboard
+        predictions, eval_labels, writer, use_tensorboard, step: int,
         ) -> float:
 
     predictions = predictions[eval_labels != -1].argmax(-1)
@@ -76,5 +86,6 @@ def calc_tag_accuracy(
 
     if use_tensorboard:
         writer.add_pr_curve(
-            'tags_pr_curve', eval_labels, predictions)
+            'tags_pr_curve', eval_labels, predictions,
+            global_step=step)
     return acc

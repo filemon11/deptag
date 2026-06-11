@@ -15,8 +15,8 @@ DEFAULT_SETTINGS = "default"
 @dataclasses.dataclass(frozen=True)
 class FileSettings:
     conllu_file: str
-    split: None | Literal["train", "test", "dev"]
     output_file: str
+    split: None | Literal["train", "test", "dev"] = None
     standard: str = "default"
     standards_dir: str = str(standards.STANDARDS_DIR)
     standard_from_xml: bool = False
@@ -47,10 +47,12 @@ class TaggingSettings:
     model_path: str
     lr: float
     epochs: int
+    grad_acc: int = 1
     tag_vocab_path: str = "vocab"
     output_path: str = "models"
-    num_warmup_steps: int = 160
+    num_warmup_steps: int = 30
     use_tensorboard: bool = True
+    eval_model_name: str = ""
 
 
 @dataclasses.dataclass(frozen=True)

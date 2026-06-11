@@ -52,7 +52,7 @@ class TaggingDataset(torch.utils.data.Dataset):
     def __init__(
             self, split, tokenizer, tag_system: Mapping[str, int],
             data: Sequence[Sequence[tuple[str, str, str]]], device,
-            dataset: str, pad_to_len=None,
+            dataset: str,
             max_train_len=350):
         self.split = split
         self.trees = data
@@ -60,7 +60,6 @@ class TaggingDataset(torch.utils.data.Dataset):
         self.dataset = dataset
         self.tag_system = tag_system
         self.pad_token_id = self.tokenizer.pad_token_id
-        self.pad_to_len = pad_to_len
         self.device = device
 
         if "train" in split and max_train_len is not None:
@@ -120,21 +119,12 @@ class TaggingDataset(torch.utils.data.Dataset):
             for w in sent]
 
         tag_ids = torch.tensor(tag_ids_, dtype=torch.long)
-        labels = torch.zeros_like(input_ids)
+        labels = torch.full_like(input_ids, -1)
 
         labels[word_end_positions] = tag_ids
         pos_ids[word_end_positions] = torch.tensor(pos_tags, dtype=torch.long)
         end_of_word[word_end_positions] = 1
         end_of_word[word_end_positions[-1]] = 2  # last word
-
-        if self.pad_to_len is not None:
-            pad_amount = self.pad_to_len - input_ids.shape[0]
-            if pad_amount >= 0:
-                input_ids = F.pad(
-                    input_ids, [0, pad_amount],
-                    value=self.pad_token_id)
-                pos_ids = F.pad(pos_ids, [0, pad_amount], value=0)
-                labels = F.pad(labels, [0, pad_amount], value=0)
 
         return {
             'input_ids': input_ids,
@@ -169,7 +159,7 @@ class TaggingDataset(torch.utils.data.Dataset):
 
         labels = pad_sequence(
             [item['labels'] for item in batch],
-            batch_first=True, padding_value=0)
+            batch_first=True, padding_value=-1)
 
         return {
             'input_ids': input_ids,

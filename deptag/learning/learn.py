@@ -7,6 +7,7 @@ import transformers
 from bitsandbytes.optim import Adam8bit
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from torch.amp.grad_scaler import GradScaler
 import tqdm
 import pathlib
 
@@ -42,11 +43,13 @@ def save_vocab(args: settings.Settings):
         delete=args.deprels.delete,
         merged=args.deprels.merged,
         without_labels=not args.deprels.labelled,
+        distinguish_fallback_subtypes=not args.deprels.labelled,
         merged_fallback_subtypes=args.deprels.merged_fallback_subtypes,
         distinguish_merged_fallback_subtypes=(
             args.deprels.distinguish_merged_fallback_subtypes),
         order_relations=args.deprels.order_relations,
         )
+    print(sup2id, not args.deprels.labelled)
 
     path = pathlib.Path(args.tagging.tag_vocab_path)
     path.mkdir(parents=True, exist_ok=True)
@@ -68,6 +71,7 @@ def prepare_training_data(
 
     tokeniser = transformers.AutoTokenizer.from_pretrained(
         model_name, truncation=True, use_fast=True)
+
 
     train_dataset = dataset.TaggingDataset(
         "train", tokeniser, tag_system, train_data, device, dataset_name)
@@ -115,15 +119,16 @@ def generate_config(
             model_path,
             num_labels=len(tag_system)+1,
         )
+
         config.task_specific_params = {
                 'model_path': model_path,
                 'pos_emb_dim': 256,
                 'num_pos_tags': 50,
-                'lstm_layers': 3,
-                'dropout': 0.33,
-                'use_pos': True,
+                # 'lstm_layers': 3,
+                'dropout': 0,  # 0.33,
+                'use_pos': False,
                 'n_heads': 12,
-                'transformer_layers': 4
+                'transformer_layers': 0
             }
     else:
         logging.error("Invalid model type.")
@@ -148,8 +153,8 @@ def initialize_model(
 
 def initialize_optimizer_and_scheduler(
         model, dataset_size, lr=5e-5, num_epochs=4,
-        num_warmup_steps=160):
-    num_training_steps = num_epochs * dataset_size
+        num_warmup_steps=160, grad_acc: int = 1):
+    num_training_steps = dataset_size // grad_acc * num_epochs
     no_decay = ['bias', 'LayerNorm.weight', 'layer_norm.weight']
     grouped_parameters = [
         {
@@ -171,6 +176,10 @@ def initialize_optimizer_and_scheduler(
             "lr": lr, "betas": (0.9, 0.999),
         },
     ]
+    # Freeze all layers
+    # for name, param in model.named_parameters():
+    #     if "bert" in name:
+    #         param.requires_grad = False
 
     optimizer = Adam8bit(
         grouped_parameters, lr=lr
@@ -206,6 +215,7 @@ def train_command(args: settings.Settings):
         delete=args.deprels.delete,
         merged=args.deprels.merged,
         without_labels=not args.deprels.labelled,
+        distinguish_fallback_subtypes=not args.deprels.labelled,
         merged_fallback_subtypes=args.deprels.merged_fallback_subtypes,
         distinguish_merged_fallback_subtypes=(
             args.deprels.distinguish_merged_fallback_subtypes),
@@ -218,6 +228,7 @@ def train_command(args: settings.Settings):
         delete=args.deprels.delete,
         merged=args.deprels.merged,
         without_labels=not args.deprels.labelled,
+        distinguish_fallback_subtypes=not args.deprels.labelled,
         merged_fallback_subtypes=args.deprels.merged_fallback_subtypes,
         distinguish_merged_fallback_subtypes=(
             args.deprels.distinguish_merged_fallback_subtypes),
@@ -241,9 +252,11 @@ def train_command(args: settings.Settings):
     optimizer, scheduler, num_training_steps = (
         initialize_optimizer_and_scheduler(
             model, train_set_size, args.tagging.lr, args.tagging.epochs,
-            args.tagging.num_warmup_steps
+            args.tagging.num_warmup_steps, args.tagging.grad_acc
         )
     )
+    scaler = GradScaler(
+        "cpu" if device == torch.device("cpu") else "cuda")
 
     optimizer.zero_grad()
     run_name = (
@@ -267,7 +280,7 @@ def train_command(args: settings.Settings):
         model.train()
 
         with tqdm.tqdm(train_dataloader, disable=False) as progbar:
-            for batch in progbar:
+            for i, batch in enumerate(progbar):
                 batch = {k: v.to(device) for k, v in batch.items()}
 
                 with torch.amp.autocast(
@@ -276,30 +289,43 @@ def train_command(args: settings.Settings):
                         ):
                     outputs = model(**batch)
 
-                loss = outputs[0]
-                loss.mean().backward()
-                if args.tagging.use_tensorboard:
-                    assert writer is not None
-                    writer.add_scalar('Loss/train', torch.mean(loss), n_iter)
-                progbar.set_postfix(loss=torch.mean(loss).item())
+                    loss = outputs[0]
 
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                # debug_optimizer_devices(model, optimizer)
-                optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad()
+                scaler.scale(loss / args.tagging.grad_acc).backward()
 
-                n_iter += 1
-                t += 1
+                if (i + 1) % args.tagging.grad_acc == 0:
+                    if args.tagging.use_tensorboard:
+                        assert writer is not None
+                        writer.add_scalar(
+                            'Loss/train', loss, n_iter)
+                    progbar.set_postfix(loss=loss.item())
+
+                    scaler.unscale_(optimizer)
+
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    # debug_optimizer_devices(model, optimizer)
+                    scaler.step(optimizer)
+                    scheduler.step()
+                    scaler.update()
+                    optimizer.zero_grad()
+
+                    n_iter += 1
+                    t += 1
 
         if True:  # evaluation at the end of epoch
-            predictions, eval_labels = evaluate.predict(
+            predictions, eval_labels, dev_loss = evaluate.predict(
                 model, dev_dataloader, len(dev_dataset),
-                len(sup2id), args.tagging.batch_size, device
+                len(sup2id), args.tagging.batch_size, device,
+                report_loss=True
             )
+            if args.tagging.use_tensorboard:
+                assert writer is not None
+                writer.add_scalar(
+                    'Loss/dev', dev_loss, n_iter)
+
             dev_acc = evaluate.calc_tag_accuracy(
                 predictions, eval_labels, writer,
-                args.tagging.use_tensorboard)
+                args.tagging.use_tensorboard, n_iter)
 
             if args.tagging.use_tensorboard:
                 assert writer is not None
@@ -310,8 +336,10 @@ def train_command(args: settings.Settings):
             logging.info("current acc {}".format(dev_acc))
             logging.info("last acc {}".format(last_acc))
             logging.info("best acc {}".format(best_acc))
+            logging.info("tol {}".format(tol))
 
             # if dev_metrics.fscore > last_fscore or dev_loss < last...
+            last_acc = dev_acc
             if dev_acc > best_acc:
                 tol = 99999
                 logging.info("tol refill")
@@ -326,14 +354,15 @@ def train_command(args: settings.Settings):
             if tol < 0:
                 _finish_training(
                     model, sup2id, dev_dataloader,
-                    dev_dataset, run_name, writer, args.tagging)
+                    dev_dataset, run_name, writer, args.tagging,
+                    n_iter)
                 return
             # end of epoch
             pass
 
     _finish_training(
         model, sup2id, dev_dataloader, dev_dataset,
-        run_name, writer, args.tagging)
+        run_name, writer, args.tagging, n_iter)
 
 
 def _save_best_model(
@@ -367,19 +396,22 @@ def debug_optimizer_devices(model, optimizer):
 
 
 def _finish_training(
-        model: torch.nn.Module, sup2id: Mapping[str, int],
+        model: torch.nn.Module,
+        sup2id: Mapping[str, int],
         eval_dataloader: DataLoader,
         eval_dataset: dataset.TaggingDataset,
-        run_name: str, writer: None | SummaryWriter,
-        args: settings.TaggingSettings):
+        run_name: str,
+        writer: None | SummaryWriter,
+        args: settings.TaggingSettings,
+        n_iter: int):
 
-    predictions, eval_labels = evaluate.predict(
+    predictions, eval_labels, _ = evaluate.predict(
         model, eval_dataloader, len(eval_dataset),
         len(sup2id), args.batch_size,
         device)
     acc = evaluate.calc_tag_accuracy(
         predictions, eval_labels, writer,
-        args.use_tensorboard)
+        args.use_tensorboard, n_iter)
     register_run_metrics(
         writer, run_name, args.lr,
         args.epochs, acc)
@@ -412,6 +444,7 @@ def evaluate_command(args: settings.Settings):
         delete=args.deprels.delete,
         merged=args.deprels.merged,
         without_labels=not args.deprels.labelled,
+        distinguish_fallback_subtypes=not args.deprels.labelled,
         merged_fallback_subtypes=args.deprels.merged_fallback_subtypes,
         distinguish_merged_fallback_subtypes=(
             args.deprels.distinguish_merged_fallback_subtypes),
@@ -434,16 +467,18 @@ def evaluate_command(args: settings.Settings):
     assert model is not None
 
     model.load_state_dict(
-        torch.load(args.tagging.model_path + args.tagging.model_name))
+        torch.load(
+            pathlib.Path(
+                args.tagging.output_path) / args.tagging.eval_model_name))
     model.to(device)
 
-    predictions, eval_labels = evaluate.predict(
+    predictions, eval_labels, _ = evaluate.predict(
         model, eval_dataloader, len(eval_dataset),
         len(sup2id), args.tagging.batch_size, device)
 
     dev_acc = evaluate.calc_tag_accuracy(
         predictions, eval_labels,
-        writer, args.tagging.use_tensorboard)
+        writer, args.tagging.use_tensorboard, 0)
 
     print(
         "acc:", dev_acc)
@@ -457,7 +492,7 @@ def predict_command(args: settings.Settings):
 
     prefix: str = args.file.conllu_file
 
-    pred_reader = data.load_conllu(prefix, None, dir=data_path)
+    pred_reader = data.load_conllu(prefix, args.file.split, dir=data_path)
     pred_data = extraction.prepare(
         pred_reader,
         arguments=args.deprels.arguments,
@@ -465,6 +500,7 @@ def predict_command(args: settings.Settings):
         delete=args.deprels.delete,
         merged=args.deprels.merged,
         without_labels=not args.deprels.labelled,
+        distinguish_fallback_subtypes=not args.deprels.labelled,
         merged_fallback_subtypes=args.deprels.merged_fallback_subtypes,
         distinguish_merged_fallback_subtypes=(
             args.deprels.distinguish_merged_fallback_subtypes),
@@ -485,26 +521,30 @@ def predict_command(args: settings.Settings):
         args.tagging.model_name, sup2id, args.tagging.model_path)
     assert model is not None
 
-    model.load_state_dict(torch.load(
-        args.tagging.model_path + args.tagging.model_name))
+    model.load_state_dict(
+        torch.load(
+            pathlib.Path(
+                args.tagging.output_path) / args.tagging.eval_model_name))
     model.to(device)
 
-    predictions, eval_labels = evaluate.predict(
+    predictions, eval_labels, _ = evaluate.predict(
         model, pred_dataloader, len(pred_dataset),
         len(sup2id), args.tagging.batch_size, device)
 
     id2sup = {i: sup for sup, i in sup2id.items()}
-    pred_ids = predictions[eval_labels != -1].argmax(-1)
-
-    supertags = [id2sup[i] for i in pred_ids]
+    pred_ids = predictions.argmax(-1)
 
     with open(
             args.tagging.output_path
             + args.tagging.model_name
-            + ".pred.json", "w") as fout:
+            + ".preds", "w") as fout:
         print(
             "Saving predictions to",
             args.tagging.output_path + args.tagging.model_name
-            + ".pred.json")
-        for sup in supertags:
-            fout.write(sup)
+            + ".preds")
+        for pred_sen, label_sen in zip(pred_ids, eval_labels):
+            sen = pred_sen[label_sen != -1]
+            for sup in sen:
+                fout.write(
+                    (id2sup[sup] if sup in id2sup else "UNK") + "\n")
+            fout.write("\n")
