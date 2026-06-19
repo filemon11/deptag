@@ -72,7 +72,6 @@ def prepare_training_data(
     tokeniser = transformers.AutoTokenizer.from_pretrained(
         model_name, truncation=True, use_fast=True)
 
-
     train_dataset = dataset.TaggingDataset(
         "train", tokeniser, tag_system, train_data, device, dataset_name)
     eval_dataset = dataset.TaggingDataset(
@@ -128,7 +127,8 @@ def generate_config(
                 'dropout': 0,  # 0.33,
                 'use_pos': False,
                 'n_heads': 12,
-                'transformer_layers': 0
+                'transformer_layers': 0,
+                'train_pos': False,
             }
     else:
         logging.error("Invalid model type.")
@@ -180,6 +180,11 @@ def initialize_optimizer_and_scheduler(
     # for name, param in model.named_parameters():
     #     if "bert" in name:
     #         param.requires_grad = False
+    #         try:
+    #             if int(name.split(".")[3]) <= 5:
+    #                 param.requires_grad = False
+    #         except ValueError:
+    #             param.requires_grad = False
 
     optimizer = Adam8bit(
         grouped_parameters, lr=lr
@@ -273,8 +278,26 @@ def train_command(args: settings.Settings):
     last_acc: float = 0
     best_acc: float = 0
     tol = 99999
+    # freeze_factor = 5
 
     for epo in tqdm.tqdm(range(args.tagging.epochs)):
+        # if (epo+1) % freeze_factor == 0:
+        #     for name, param in model.named_parameters():
+        #         if "bert" in name:
+        #             try:
+        #                 if int(name.split(".")[3]) >= 12-(
+        #                         (epo+1) % freeze_factor):
+        #                     param.requires_grad = True
+        #             except ValueError:
+        #                 if (epo+1) % freeze_factor == 12:
+        #                     param.requires_grad = True
+        #                 else:
+        #                     param.requires_grad = False
+
+        # for name, param in model.named_parameters():
+        #     if param.requires_grad:
+        #         print(f"requires gradient: {name}")
+
         logging.info(f"*******************EPOCH {epo}*******************")
         t = 1
         model.train()
@@ -429,7 +452,7 @@ def decode_model_name(model_name):
     return tagging_schema, model_type
 
 
-def evaluate_command(args: settings.Settings):
+def evaluate_command(args: settings.Settings, k: int = 1):
     data_path: pathlib.Path = pathlib.Path(
         args.file.data_folder)
 
@@ -476,12 +499,13 @@ def evaluate_command(args: settings.Settings):
         model, eval_dataloader, len(eval_dataset),
         len(sup2id), args.tagging.batch_size, device)
 
-    dev_acc = evaluate.calc_tag_accuracy(
+    dev_accs = evaluate.calc_tag_accuracy_upto_k(
         predictions, eval_labels,
-        writer, args.tagging.use_tensorboard, 0)
+        writer, args.tagging.use_tensorboard, 0, k)
 
-    print(
-        "acc:", dev_acc)
+    for k, acc in enumerate(dev_accs, start=1):
+        print(
+            f"acc k={k}:", acc)
 
 
 def predict_command(args: settings.Settings):

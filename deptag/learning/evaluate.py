@@ -7,7 +7,6 @@ import tqdm
 from typing import overload, Literal
 
 
-
 @overload
 def predict(
         model, eval_dataloader, dataset_size, num_tags, batch_size, device,
@@ -76,16 +75,61 @@ def calc_tag_accuracy(
         predictions, eval_labels, writer, use_tensorboard, step: int,
         ) -> float:
 
-    predictions = predictions[eval_labels != -1].argmax(-1)
+    acc = calc_tag_accuracy_k(
+        predictions, eval_labels, writer, use_tensorboard, step, k=1
+    )
+    if use_tensorboard:
+        writer.add_pr_curve(
+            'tags_pr_curve',
+            eval_labels[eval_labels != -1],
+            predictions[eval_labels != -1].argmax(-1),
+            global_step=step)
 
-    eval_labels = eval_labels[eval_labels != -1]
+    return acc
 
-    acc = (predictions == eval_labels).mean()
 
-    logging.info('tags_accuracy: {}'.format(acc))
+def calc_tag_accuracy_k(
+        predictions, eval_labels, writer, use_tensorboard,
+        step: int, k: int = 1
+        ) -> float:
+
+    if k == 1:
+        predictions = predictions[eval_labels != -1].argmax(-1)
+
+        eval_labels = eval_labels[eval_labels != -1]
+
+        acc = (predictions == eval_labels).mean()
+
+    else:
+        predictions = np.argpartition(
+            predictions[eval_labels != -1], -k, axis=-1)[..., -k:]
+        # predictions = np.top_k(predictions[eval_labels != -1], k=k, dim=-1)
+
+        eval_labels = eval_labels[eval_labels != -1]
+
+        acc = (predictions == eval_labels[..., None]).any(-1).mean()
+
+    logging.info('tags_accuracy {} best: {}'.format(k, acc))
+
+    return acc
+
+
+def calc_tag_accuracy_upto_k(
+            predictions, eval_labels, writer, use_tensorboard,
+            step: int, k: int = 1
+        ) -> list[float]:
+    accs = [
+        calc_tag_accuracy_k(
+            predictions, eval_labels, writer, use_tensorboard, step, k=m
+        )
+        for m in range(1, k+1)
+    ]
 
     if use_tensorboard:
         writer.add_pr_curve(
-            'tags_pr_curve', eval_labels, predictions,
+            'tags_pr_curve',
+            eval_labels[eval_labels != -1],
+            predictions[eval_labels != -1].argmax(-1),
             global_step=step)
-    return acc
+
+    return accs

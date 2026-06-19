@@ -40,7 +40,11 @@ train = subparser.add_parser('train')
 evaluate = subparser.add_parser('evaluate')
 predict_parser = subparser.add_parser('predict')
 vocab = subparser.add_parser('vocab')
-vocab = subparser.add_parser('extract')
+extract = subparser.add_parser('extract')
+
+evaluate.add_argument(
+    '--k', default=1, type=int, help="best k to check"
+)
 
 
 def load_and_write(
@@ -156,7 +160,7 @@ def extract_multiple(
     return stats
 
 
-def extract(sett: settings.ExtractSettings):
+def extract_func(sett: settings.ExtractSettings):
 
     # sett = settings.load_settings(
     #     settings_name=settings_name)
@@ -228,7 +232,7 @@ if __name__ == "__main__":
         learning.train_command(sett)
     elif args.command == 'evaluate':
         sett = settings.load_settings("full", args.settings)
-        learning.evaluate_command(sett)
+        learning.evaluate_command(sett, args.k)
     elif args.command == 'predict':
         sett = settings.load_settings("full", args.settings)
         learning.predict_command(sett)
@@ -237,6 +241,6 @@ if __name__ == "__main__":
         learning.save_vocab(sett)
     elif args.command == "extract":
         sett_extr = settings.load_settings("extract", args.settings)
-        extract(sett_extr)
+        extract_func(sett_extr)
     else:
         raise Exception(f"Option {args.command} unknown.")
