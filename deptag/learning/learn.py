@@ -10,7 +10,6 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.amp.grad_scaler import GradScaler
 import tqdm
 import pathlib
-
 from . import model, dataset, evaluate
 from .. import extraction, data, settings
 
@@ -23,7 +22,8 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def initialize_tag_system(
         ds: str,
-        tag_vocab_path: pathlib.Path = pathlib.Path(".")) -> dict[str, int]:
+        tag_vocab_path: pathlib.Path = pathlib.Path(".")
+        ) -> dict[str, int]:
     with open(tag_vocab_path / (ds + '.pkl'), 'rb') as f:
         tag_vocab = pickle.load(f)
 
@@ -128,7 +128,7 @@ def generate_config(
                 'use_pos': False,
                 'n_heads': 12,
                 'transformer_layers': 0,
-                'train_pos': False,
+                'train_pos': True,
             }
     else:
         logging.error("Invalid model type.")
@@ -199,10 +199,16 @@ def initialize_optimizer_and_scheduler(
 
 
 def register_run_metrics(
-        writer, run_name, lr, epochs, tag_accuracy):
-    writer.add_hparams(
-        {'run_name': run_name, 'lr': lr, 'epochs': epochs},
-        {'tag_accuracy': tag_accuracy})
+        writer, run_name, lr, epochs, tag_accuracy,
+        pos_accuracy: None | float = None):
+    if pos_accuracy is None:
+        writer.add_hparams(
+            {'run_name': run_name, 'lr': lr, 'epochs': epochs},
+            {'tag_accuracy': tag_accuracy})
+    else:
+        writer.add_hparams(
+            {'run_name': run_name, 'lr': lr, 'epochs': epochs},
+            {'tag_accuracy': tag_accuracy, 'pos_accuracy': pos_accuracy})
 
 
 def train_command(args: settings.Settings):
@@ -312,7 +318,11 @@ def train_command(args: settings.Settings):
                         ):
                     outputs = model(**batch)
 
-                    loss = outputs[0]
+                    sup_loss = outputs[0]
+                    pos_loss = outputs[2]
+                    loss = sup_loss
+                    if pos_loss is not None:
+                        loss += pos_loss
 
                 scaler.scale(loss / args.tagging.grad_acc).backward()
 
@@ -321,6 +331,11 @@ def train_command(args: settings.Settings):
                         assert writer is not None
                         writer.add_scalar(
                             'Loss/train', loss, n_iter)
+                        if pos_loss is not None:
+                            writer.add_scalar(
+                                'SupLoss/train', sup_loss, n_iter)
+                            writer.add_scalar(
+                                'PosLoss/train', pos_loss, n_iter)
                     progbar.set_postfix(loss=loss.item())
 
                     scaler.unscale_(optimizer)
@@ -336,15 +351,30 @@ def train_command(args: settings.Settings):
                     t += 1
 
         if True:  # evaluation at the end of epoch
-            predictions, eval_labels, dev_loss = evaluate.predict(
-                model, dev_dataloader, len(dev_dataset),
-                len(sup2id), args.tagging.batch_size, device,
-                report_loss=True
+            (
+                predictions, eval_labels, pos_predictions,
+                eval_pos_labels, dev_loss, dev_pos_loss) = (
+                evaluate.predict(
+                    model, dev_dataloader, len(dev_dataset),
+                    len(sup2id), args.tagging.batch_size, device,
+                    report_loss=True)
             )
             if args.tagging.use_tensorboard:
                 assert writer is not None
                 writer.add_scalar(
                     'Loss/dev', dev_loss, n_iter)
+                if dev_pos_loss is not None:
+                    writer.add_scalar(
+                        'SupLoss/dev', dev_loss, n_iter)
+                    writer.add_scalar(
+                        'PosLoss/dev', dev_pos_loss, n_iter)
+
+            dev_pos_acc = None
+            if pos_predictions is not None:
+                dev_pos_acc = evaluate.calc_tag_accuracy(
+                    pos_predictions, eval_pos_labels, writer,
+                    args.tagging.use_tensorboard, n_iter,
+                    is_pos=True)
 
             dev_acc = evaluate.calc_tag_accuracy(
                 predictions, eval_labels, writer,
@@ -355,7 +385,12 @@ def train_command(args: settings.Settings):
                 writer.add_scalar(
                     'acc/dev',
                     dev_acc, n_iter)
+                if dev_pos_acc is not None:
+                    writer.add_scalar(
+                        'pos_acc/dev',
+                        dev_pos_acc, n_iter)
 
+            logging.info("current pos acc {}".format(dev_pos_acc))
             logging.info("current acc {}".format(dev_acc))
             logging.info("last acc {}".format(last_acc))
             logging.info("best acc {}".format(best_acc))
@@ -428,16 +463,25 @@ def _finish_training(
         args: settings.TaggingSettings,
         n_iter: int):
 
-    predictions, eval_labels, _ = evaluate.predict(
-        model, eval_dataloader, len(eval_dataset),
-        len(sup2id), args.batch_size,
-        device)
+    predictions, eval_labels, pos_predictions, eval_pos_labels, _, _ = (
+        evaluate.predict(
+            model, eval_dataloader, len(eval_dataset),
+            len(sup2id), args.batch_size,
+            device))
+
+    pos_acc = None
+    if pos_predictions is not None:
+        pos_acc = evaluate.calc_tag_accuracy(
+            pos_predictions, eval_pos_labels, writer,
+            args.use_tensorboard, n_iter)
+
     acc = evaluate.calc_tag_accuracy(
         predictions, eval_labels, writer,
         args.use_tensorboard, n_iter)
+
     register_run_metrics(
         writer, run_name, args.lr,
-        args.epochs, acc)
+        args.epochs, acc, pos_acc)
 
 
 def decode_model_name(model_name):
@@ -495,17 +539,27 @@ def evaluate_command(args: settings.Settings, k: int = 1):
                 args.tagging.output_path) / args.tagging.eval_model_name))
     model.to(device)
 
-    predictions, eval_labels, _ = evaluate.predict(
-        model, eval_dataloader, len(eval_dataset),
-        len(sup2id), args.tagging.batch_size, device)
+    predictions, eval_labels, pos_predictions, eval_pos_labels, _, _ = (
+        evaluate.predict(
+            model, eval_dataloader, len(eval_dataset),
+            len(sup2id), args.tagging.batch_size, device))
 
     dev_accs = evaluate.calc_tag_accuracy_upto_k(
         predictions, eval_labels,
         writer, args.tagging.use_tensorboard, 0, k)
 
+    dev_pos_accs = None
+    if pos_predictions is not None:
+        dev_pos_accs = evaluate.calc_tag_accuracy_upto_k(
+            pos_predictions, eval_pos_labels,
+            writer, args.tagging.use_tensorboard, 0, k, is_pos=True)
+
     for k, acc in enumerate(dev_accs, start=1):
         print(
             f"acc k={k}:", acc)
+        if dev_pos_accs is not None:
+            print(
+                f"pos_acc k={k}:", dev_pos_accs[k-1])
 
 
 def predict_command(args: settings.Settings):
@@ -551,24 +605,42 @@ def predict_command(args: settings.Settings):
                 args.tagging.output_path) / args.tagging.eval_model_name))
     model.to(device)
 
-    predictions, eval_labels, _ = evaluate.predict(
-        model, pred_dataloader, len(pred_dataset),
-        len(sup2id), args.tagging.batch_size, device)
+    predictions, eval_labels, pos_predictions, eval_pos_labels, _, _ = (
+        evaluate.predict(
+            model, pred_dataloader, len(pred_dataset),
+            len(sup2id), args.tagging.batch_size, device))
 
     id2sup = {i: sup for sup, i in sup2id.items()}
     pred_ids = predictions.argmax(-1)
 
+    id2pos = {i: sup for sup, i in pred_dataset.pos_dict.items()}
+    pred_pos_ids = None
+    if pos_predictions is not None:
+        pred_pos_ids = pos_predictions.argmax(-1)
+
     with open(
-            args.tagging.output_path
-            + args.tagging.model_name
-            + ".preds", "w") as fout:
+            pathlib.Path(
+                args.tagging.output_path,
+                args.tagging.model_name
+                + ".preds"),
+            "w") as fout:
         print(
             "Saving predictions to",
-            args.tagging.output_path + args.tagging.model_name
+            args.tagging.output_path + "/" + args.tagging.model_name
             + ".preds")
-        for pred_sen, label_sen in zip(pred_ids, eval_labels):
+        for i, (pred_sen, label_sen) in enumerate(zip(pred_ids, eval_labels)):
             sen = pred_sen[label_sen != -1]
-            for sup in sen:
-                fout.write(
-                    (id2sup[sup] if sup in id2sup else "UNK") + "\n")
+            pos_sen = None
+            if pred_pos_ids is not None:
+                pos_sen = pred_pos_ids[i][label_sen != -1]
+            for j, sup in enumerate(sen):
+                sup_out = id2sup[sup] if sup in id2sup else "UNK"
+                if pred_pos_ids is not None and pos_sen is not None:
+                    fout.write(
+                        sup_out + "\t" +
+                        (id2pos[pos_sen[j]] if pos_sen[j] in id2pos else "UNK")
+                        + "\n")
+                else:
+                    fout.write(
+                        (sup_out) + "\n")
             fout.write("\n")

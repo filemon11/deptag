@@ -105,6 +105,11 @@ class ModelForTagging(nn.Module):
         self.projection = nn.Sequential(
             nn.Linear(config.hidden_size, config.num_labels)
         )
+        self.pos_projection = None
+        if config.task_specific_params["train_pos"]:
+            self.pos_projection = nn.Sequential(
+                nn.Linear(config.hidden_size, self.num_pos_tags)
+            )
 
     def forward(
             self,
@@ -149,12 +154,21 @@ class ModelForTagging(nn.Module):
 
         tag_logits = self.projection(self.dropout(token_repr))
 
+        pos_logits = None
+        if self.pos_projection is not None:
+            pos_logits = self.pos_projection(self.dropout(token_repr))
+
         loss = None
+        pos_loss = None
         if labels is not None and (self.training or report_loss):
             loss = calc_loss_helper(
                 tag_logits, labels, attention_mask.bool(),
                 printinfo=printinfo
             )
-            return loss, tag_logits
-        else:
-            return loss, tag_logits
+            if self.pos_projection is not None:
+                pos_loss = calc_loss_helper(
+                    pos_logits, pos_ids, attention_mask.bool(),
+                    printinfo=printinfo
+                )
+
+        return loss, tag_logits, pos_loss, pos_logits
