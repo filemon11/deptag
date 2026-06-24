@@ -53,6 +53,8 @@ class TaggingSettings:
     num_warmup_steps: int = 30
     use_tensorboard: bool = True
     eval_model_name: str = ""
+    loss_ratio: float = 0.5
+    train_pos: bool = True
 
 
 @dataclasses.dataclass(frozen=True)

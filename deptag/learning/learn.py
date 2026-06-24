@@ -112,7 +112,8 @@ def prepare_test_data(
 
 
 def generate_config(
-        model_type: str, tag_system: Mapping[str, int], model_path: str):
+        model_type: str, tag_system: Mapping[str, int], model_path: str,
+        train_pos: bool = True):
     if model_type in BERT:
         config = transformers.AutoConfig.from_pretrained(
             model_path,
@@ -128,7 +129,7 @@ def generate_config(
                 'use_pos': False,
                 'n_heads': 12,
                 'transformer_layers': 0,
-                'train_pos': True,
+                'train_pos': train_pos,
             }
     else:
         logging.error("Invalid model type.")
@@ -137,10 +138,11 @@ def generate_config(
 
 
 def initialize_model(
-        model_type: str, tag_system: Mapping[str, int], model_path: str
+        model_type: str, tag_system: Mapping[str, int], model_path: str,
+        train_pos: bool = True
         ) -> model.ModelForTagging | None:
     config = generate_config(
-        model_type, tag_system, model_path
+        model_type, tag_system, model_path, train_pos=train_pos
     )
     if model_type in BERT:
         m = model.ModelForTagging(config=config)
@@ -254,7 +256,8 @@ def train_command(args: settings.Settings):
 
     logging.info("Initializing The Model")
     model = initialize_model(
-        args.tagging.model_name, sup2id, args.tagging.model_path
+        args.tagging.model_name, sup2id, args.tagging.model_path,
+        train_pos=args.tagging.train_pos
     )
     assert model is not None
     model.to(device)
@@ -322,7 +325,8 @@ def train_command(args: settings.Settings):
                     pos_loss = outputs[2]
                     loss = sup_loss
                     if pos_loss is not None:
-                        loss += pos_loss
+                        loss = args.tagging.loss_ratio*loss + (
+                            1-args.tagging.loss_ratio)*pos_loss
 
                 scaler.scale(loss / args.tagging.grad_acc).backward()
 
@@ -390,19 +394,27 @@ def train_command(args: settings.Settings):
                         'pos_acc/dev',
                         dev_pos_acc, n_iter)
 
-            logging.info("current pos acc {}".format(dev_pos_acc))
-            logging.info("current acc {}".format(dev_acc))
+            combined_acc = dev_acc
+            if dev_pos_acc is not None:
+                combined_acc = args.tagging.loss_ratio*dev_acc + (
+                    1-args.tagging.loss_ratio)*dev_pos_acc
+
+            if dev_pos_acc is not None:
+                logging.info("current pos acc {}".format(dev_pos_acc))
+            logging.info("current supertag acc {}".format(dev_acc))
+            if dev_pos_acc is not None:
+                logging.info("combined acc {}".format(combined_acc))
             logging.info("last acc {}".format(last_acc))
             logging.info("best acc {}".format(best_acc))
             logging.info("tol {}".format(tol))
 
             # if dev_metrics.fscore > last_fscore or dev_loss < last...
-            last_acc = dev_acc
-            if dev_acc > best_acc:
+            last_acc = combined_acc
+            if combined_acc > best_acc:
                 tol = 99999
                 logging.info("tol refill")
                 logging.info("save the best model")
-                best_acc = dev_acc
+                best_acc = combined_acc
                 _save_best_model(
                     model, pathlib.Path(
                         args.tagging.output_path), run_name)

@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
+import transformers
 
 from typing import Mapping, Sequence, Iterable
 
@@ -56,7 +57,7 @@ class TaggingDataset(torch.utils.data.Dataset):
             max_train_len=350):
         self.split = split
         self.trees = data
-        self.tokenizer = tokenizer
+        self.tokenizer: transformers.BertTokenizer = tokenizer
         self.dataset = dataset
         self.tag_system = tag_system
         self.pad_token_id = self.tokenizer.pad_token_id
@@ -99,6 +100,10 @@ class TaggingDataset(torch.utils.data.Dataset):
     def __getitem__(self, index: int):
         sent = self.trees[index]
         words = ptb_unescape(w[0] for w in sent)
+
+        words = [w.replace("\xad", "") for w in words] 
+        # necessary to remove soft-hyphens from Romanian RRT dataset
+
         pos_tags = [self.pos_dict.get(w[1], 0) for w in sent]
 
         if 'albert' in str(type(self.tokenizer)):
