@@ -50,4 +50,5 @@ def load_conllu(
             parse_conllu(
                 name, dir=dir, suffix=suffix, encoding=encoding),
             desc="Loading conllu"):
+        tokenlist = tokenlist.filter(id=lambda x: type(x) is int)
         yield tokenlist

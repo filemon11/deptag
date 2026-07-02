@@ -200,17 +200,17 @@ def extract_func(sett: settings.ExtractSettings):
 
     stat_dict: dict[str, extraction.Statistics] = {}
     for corpus in (
-            # "Bulgarian-BTB",
-            # "Catalan-AnCora",
-            # "Czech-PDTC",
-            # "German-GSD",
-            # "English-Atis",
-            # "Spanish-AnCora",
-            # "French-GSD",
-            # "Italian-ISDT",
-            # "Dutch-Alpino",
-            # "Norwegian-Bokmaal",
-            # "Romanian-RRT",
+            "Bulgarian-BTB",
+            "Catalan-AnCora",
+            "Czech-PDTC",
+            "German-GSD",
+            "English-EWT",
+            "Spanish-AnCora",
+            "French-GSD",
+            "Italian-ISDT",
+            "Dutch-Alpino",
+            "Norwegian-Bokmaal",
+            "Romanian-RRT",
             "Russian-SynTagRus",
             # "combined",
             ):

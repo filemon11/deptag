@@ -59,8 +59,8 @@ def save_vocab(args: settings.Settings):
 
 
 def prepare_training_data(
-        train_data: Sequence[Sequence[tuple[str, str, str]]],
-        eval_data: Sequence[Sequence[tuple[str, str, str]]],
+        train_data: Sequence[Sequence[tuple[str, str, str, int, str]]],
+        eval_data: Sequence[Sequence[tuple[str, str, str, int, str]]],
         dataset_name: str,
         tag_system: Mapping[str, int],
         model_name: str,
@@ -90,7 +90,7 @@ def prepare_training_data(
 
 
 def prepare_test_data(
-        test_data: Sequence[Sequence[tuple[str, str, str]]],
+        test_data: Sequence[Sequence[tuple[str, str, str, int, str]]],
         dataset_name: str,
         tag_system: Mapping[str, int],
         model_name: str,
@@ -113,24 +113,31 @@ def prepare_test_data(
 
 def generate_config(
         model_type: str, tag_system: Mapping[str, int], model_path: str,
-        train_pos: bool = True):
+        train_pos: bool = True,
+        num_pos_tags: int = 50, num_deprel_tags: int | None = None,):
     if model_type in BERT:
         config = transformers.AutoConfig.from_pretrained(
             model_path,
             num_labels=len(tag_system)+1,
         )
-
+        print(num_pos_tags, num_deprel_tags)
         config.task_specific_params = {
                 'model_path': model_path,
                 'pos_emb_dim': 256,
-                'num_pos_tags': 50,
+                'num_pos_tags': num_pos_tags+1,
                 # 'lstm_layers': 3,
                 'dropout': 0,  # 0.33,
                 'use_pos': False,
                 'n_heads': 12,
                 'transformer_layers': 0,
                 'train_pos': train_pos,
-            }
+                'mlp_arc_hidden': 500,
+                'mlp_lab_hidden': 100 if num_deprel_tags is not None else None,
+                'mlp_dropout': 0.3,
+                'mlp_num_labels': (
+                    num_deprel_tags+1 if num_deprel_tags is not None
+                    else None),
+        }
     else:
         logging.error("Invalid model type.")
         return
@@ -139,10 +146,12 @@ def generate_config(
 
 def initialize_model(
         model_type: str, tag_system: Mapping[str, int], model_path: str,
-        train_pos: bool = True
+        train_pos: bool = True, num_pos_tags: int = 50,
+        num_deprel_tags: int | None = None
         ) -> model.ModelForTagging | None:
     config = generate_config(
-        model_type, tag_system, model_path, train_pos=train_pos
+        model_type, tag_system, model_path, train_pos=train_pos,
+        num_pos_tags=num_pos_tags, num_deprel_tags=num_deprel_tags
     )
     if model_type in BERT:
         m = model.ModelForTagging(config=config)
@@ -257,7 +266,8 @@ def train_command(args: settings.Settings):
     logging.info("Initializing The Model")
     model = initialize_model(
         args.tagging.model_name, sup2id, args.tagging.model_path,
-        train_pos=args.tagging.train_pos
+        train_pos=args.tagging.train_pos,
+        num_pos_tags=len(train_dataset.pos_dict)
     )
     assert model is not None
     model.to(device)
@@ -542,7 +552,8 @@ def evaluate_command(args: settings.Settings, k: int = 1):
         args.tagging.batch_size)
 
     model = initialize_model(
-        args.tagging.model_name, sup2id, args.tagging.model_path)
+        args.tagging.model_name, sup2id, args.tagging.model_path,
+        num_pos_tags=len(eval_dataset.pos_dict))
     assert model is not None
 
     model.load_state_dict(
@@ -608,7 +619,8 @@ def predict_command(args: settings.Settings):
         args.tagging.batch_size)
 
     model = initialize_model(
-        args.tagging.model_name, sup2id, args.tagging.model_path)
+        args.tagging.model_name, sup2id, args.tagging.model_path,
+        num_pos_tags=len(pred_dataset.pos_dict))
     assert model is not None
 
     model.load_state_dict(

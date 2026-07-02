@@ -2,52 +2,10 @@ import pathlib
 import torch
 from torch import nn
 import bitsandbytes as bnb
-import torch.nn.functional as F
+
+from . import losses, biaffine
 
 from transformers import AutoModel
-
-
-# @torch.compile
-def calc_loss_helper(
-        logits, labels, attention_mask, printinfo: bool = False):
-    # shape: (batch_size, seq_len, num_tags) -> (batch_size, num_tags, seq_len)
-    logits = torch.movedim(logits, -1, 1)
-
-    # # Only keep active parts of the loss
-    # active_labels = torch.where(
-    #     attention_mask, labels, -1
-    # )
-
-    loss = F.cross_entropy(
-        logits, labels, ignore_index=-1, reduction="mean")
-
-    logits_wo_ignore = logits.transpose(-1, -2)[labels != -1]
-    labels_wo_ignore = labels[labels != -1]
-
-    if printinfo:
-        logits_wo_ignore_mask = (
-            logits_wo_ignore.argmax(-1) == labels_wo_ignore)
-
-        # loss_wo_ignore = F.cross_entropy(
-        #     logits_wo_ignore, labels_wo_ignore, reduce="mean")
-        # print(loss, loss_wo_ignore)
-
-        logits_correct = logits_wo_ignore[logits_wo_ignore_mask]
-        labels_correct = labels_wo_ignore[logits_wo_ignore_mask]
-        loss_correct = F.cross_entropy(
-            logits_correct, labels_correct, reduction="mean")
-
-        logits_false = logits_wo_ignore[~logits_wo_ignore_mask]
-        labels_false = labels_wo_ignore[~logits_wo_ignore_mask]
-        loss_false = F.cross_entropy(
-            logits_false, labels_false, reduction="mean")
-
-        print("correct item loss:", loss_correct.item())
-        print("false item loss:", loss_false.item())
-        print("num correct items:", len(labels_correct))
-        print("num false items:", len(labels_false))
-        print("loss:", loss)
-    return loss
 
 
 class ModelForTagging(nn.Module):
@@ -111,6 +69,14 @@ class ModelForTagging(nn.Module):
                 nn.Linear(config.hidden_size, self.num_pos_tags)
             )
 
+        self.biaffine = biaffine.make_model(
+            config.hidden_size,
+            config.task_specific_params["mlp_arc_hidden"],
+            config.task_specific_params["mlp_lab_hidden"],
+            config.task_specific_params["mlp_dropout"],
+            config.task_specific_params["mlp_num_labels"],
+        )
+
     def forward(
             self,
             input_ids=None,
@@ -120,6 +86,8 @@ class ModelForTagging(nn.Module):
             head_mask=None,
             inputs_embeds=None,
             labels=None,
+            heads=None,
+            deprel_ids=None,
             output_attentions=None,
             output_hidden_states=None,
             report_loss: bool = False,
@@ -158,17 +126,30 @@ class ModelForTagging(nn.Module):
         if self.pos_projection is not None:
             pos_logits = self.pos_projection(self.dropout(token_repr))
 
+        S_arc, S_lab = self.biaffine(token_repr)
+
         loss = None
         pos_loss = None
+        arc_loss = None
+        label_loss = None
         if labels is not None and (self.training or report_loss):
-            loss = calc_loss_helper(
+            loss = losses.calc_loss_helper(
                 tag_logits, labels, attention_mask.bool(),
                 printinfo=printinfo
             )
-            if self.pos_projection is not None:
-                pos_loss = calc_loss_helper(
-                    pos_logits, pos_ids, attention_mask.bool(),
-                    printinfo=printinfo
-                )
+        if self.pos_projection is not None:
+            pos_loss = losses.calc_loss_helper(
+                pos_logits, pos_ids, attention_mask.bool(),
+                printinfo=printinfo
+            )
+        if heads is not None:
+            arc_loss = self.biaffine.arc_loss(
+                S_arc, heads, attention_mask.bool(), printinfo=printinfo)
+        if self.biaffine.lab_mlp_d is not None:
+            label_loss = self.biaffine.lab_loss(
+                S_lab, heads, deprel_ids, attention_mask.bool(),
+                printinfo=printinfo)
 
-        return loss, tag_logits, pos_loss, pos_logits
+        return (
+            loss, tag_logits, pos_loss, pos_logits,
+            arc_loss, S_arc, label_loss, S_lab)

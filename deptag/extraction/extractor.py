@@ -1,3 +1,4 @@
+from . import projectiveness
 from .. import data
 from ..data import locs
 
@@ -211,6 +212,10 @@ class Statistics():
     num_right_adjuncts: int
     num_strict_left_adjuncts: int
     num_strict_right_adjuncts: int
+    gap_counts: Counter[int]
+    gap_counts_initial: Counter[int]
+    gap_counts_adjunct: Counter[int]
+    gap_counts_without_adj: Counter[int] | None = None
 
     def __add__(self, other: "Statistics") -> "Statistics":
         supertag_to_nums = Counter(self.supertag_to_nums) + Counter(
@@ -284,6 +289,9 @@ class Statistics():
             tag for tag in supertag_to_nums.keys()
             if "-" in tag.split("*")[0].split("+")[0]
         ])
+        gap_counts = self.gap_counts + other.gap_counts
+        gap_counts_initial = self.gap_counts_initial + other.gap_counts_initial
+        gap_counts_adjunct = self.gap_counts_adjunct + other.gap_counts_adjunct
 
         return Statistics(
             num_supertags=len(supertags),
@@ -310,6 +318,9 @@ class Statistics():
             num_right_adjuncts=num_right_adjuncts,
             num_strict_left_adjuncts=num_strict_left_adjuncts,
             num_strict_right_adjuncts=num_strict_right_adjuncts,
+            gap_counts=gap_counts,
+            gap_counts_adjunct=gap_counts_adjunct,
+            gap_counts_initial=gap_counts_initial
         )
 
 
@@ -374,6 +385,22 @@ def print_statistics(statistics: Statistics):
         "# of strict right adjoining adjunct trees:",
         statistics.num_strict_right_adjuncts
     )
+    print(
+            "gap counts:",
+            statistics.gap_counts
+        )
+    print(
+            "gap counts with adjuncts as gaps:",
+            statistics.gap_counts_without_adj
+        )
+    print(
+            "gap counts adjunct:",
+            statistics.gap_counts_adjunct
+        )
+    print(
+            "gap counts initial:",
+            statistics.gap_counts_initial
+        )
 
 
 def extract(
@@ -401,8 +428,16 @@ def extract(
     relative_tags: set[RelativeTag] = set()
     occurrences_per_label: DefaultDict[str, int] = defaultdict(int)
 
+    gap_counts: Counter[int] = Counter()
+    gap_counts_without_adj: Counter[int] = Counter()
+    gap_counts_initial: Counter[int] = Counter()
+    gap_counts_adjunct: Counter[int] = Counter()
+
     for sentence in tqdm.tqdm(
             sentences, desc="Extracting supertags"):
+        constituents = projectiveness.find_constituents(sentence.to_tree())
+        gap_counts += projectiveness.count_gap_numbers(constituents.values())
+
         raw_relations = collect_relations(
             sentence, arguments, adjuncts, delete,
             merged,
@@ -419,8 +454,21 @@ def extract(
             convert_relative_relation_to_string(rel)
             for rel in relative_relations]
 
+        constituents_without_adj = (
+            projectiveness.find_constituents_without_adj(
+                sentence.to_tree(), string_relations))
+        gap_counts_without_adj += projectiveness.count_gap_numbers(
+            constituents_without_adj.values())
+
         sentence_iter = iter(sentence)
-        for string in string_relations:
+        for i, string in enumerate(string_relations, start=1):
+            if "-" in string:
+                gap_counts_adjunct[
+                    projectiveness.gap_number(constituents[i])] += 1
+            else:
+                gap_counts_initial[
+                    projectiveness.gap_number(constituents[i])] += 1
+
             supertag_to_nums[string] += 1
 
             token = next(sentence_iter)
@@ -517,6 +565,10 @@ def extract(
         num_right_adjuncts=num_right_adjuncts,
         num_strict_left_adjuncts=num_strict_left_adjuncts,
         num_strict_right_adjuncts=num_strict_right_adjuncts,
+        gap_counts=gap_counts,
+        gap_counts_adjunct=gap_counts_adjunct,
+        gap_counts_initial=gap_counts_initial,
+        gap_counts_without_adj=gap_counts_without_adj,
     )
 
 
@@ -642,8 +694,15 @@ def read(
     relative_tags: set[RelativeTag] = set()
     occurrences_per_label: DefaultDict[str, int] = defaultdict(int)
 
+    gap_counts: Counter[int] = Counter()
+    gap_counts_initial: Counter[int] = Counter()
+    gap_counts_adjunct: Counter[int] = Counter()
+
     for sentence in tqdm.tqdm(
             sentences, desc="Extracting supertags"):
+        constituents = projectiveness.find_constituents(sentence.to_tree())
+        gap_counts += projectiveness.count_gap_numbers(constituents.values())
+
         string_relations: list[str] = get_string_relations(sentence)
         relative_relations: list[RelativeTag] = [
             convert_string_to_relative_relation(
@@ -672,7 +731,14 @@ def read(
                     occurrences_per_label[tag[1]] += 1
 
         sentence_iter = iter(sentence)
-        for string in string_relations:
+        for i, string in enumerate(string_relations, start=1):
+            if "-" in string:
+                gap_counts_adjunct[
+                    projectiveness.gap_number(constituents[i])] += 1
+            else:
+                gap_counts_initial[
+                    projectiveness.gap_number(constituents[i])] += 1
+
             supertag_to_nums[string] += 1
 
             token = next(sentence_iter)
@@ -758,6 +824,9 @@ def read(
         num_right_adjuncts=num_right_adjuncts,
         num_strict_left_adjuncts=num_strict_left_adjuncts,
         num_strict_right_adjuncts=num_strict_right_adjuncts,
+        gap_counts=gap_counts,
+        gap_counts_adjunct=gap_counts_adjunct,
+        gap_counts_initial=gap_counts_initial,
     )
 
 

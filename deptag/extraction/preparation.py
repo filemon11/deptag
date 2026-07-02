@@ -16,10 +16,10 @@ def prepare_train(
         merged_fallback_subtypes: bool = True,
         distinguish_merged_fallback_subtypes: bool = True,
         order_relations: bool = True,
-        ) -> tuple[list[list[tuple[str, str, str]]], dict[str, int]]:
+        ) -> tuple[list[list[tuple[str, str, str, int, str]]], dict[str, int]]:
     # -> word, pos, supertag
 
-    sents: list[list[tuple[str, str, str]]] = []
+    sents: list[list[tuple[str, str, str, int, str]]] = []
     sup2id: dict[str, int] = {}
     for sen in extractor.extract(
             sentences,
@@ -34,9 +34,11 @@ def prepare_train(
                 distinguish_merged_fallback_subtypes),
             order_relations=order_relations,
             ):
-        sent: list[tuple[str,  str, str]] = []
+        sent: list[tuple[str,  str, str, int, str]] = []
         for sup, word in zip(sen[2], sen[3]):
-            sent.append((word["form"], word["upos"], sup))
+            sent.append((
+                word["form"], word["upos"],
+                sup, word["head"], word["deprel"]))
 
             if sup not in sup2id:
                 sup2id[sup] = len(sup2id)+1
@@ -58,10 +60,10 @@ def prepare(
         merged_fallback_subtypes: bool = True,
         distinguish_merged_fallback_subtypes: bool = True,
         order_relations: bool = True,
-        ) -> list[list[tuple[str, str, str]]]:
+        ) -> list[list[tuple[str, str, str, int, str]]]:
     # -> word, pos, supertag
 
-    sents: list[list[tuple[str, str, str]]] = []
+    sents: list[list[tuple[str, str, str, int, str]]] = []
     for sen in extractor.extract(
             sentences,
             arguments,
@@ -75,9 +77,11 @@ def prepare(
                 distinguish_merged_fallback_subtypes),
             order_relations=order_relations,
             ):
-        sent: list[tuple[str,  str, str]] = []
+        sent: list[tuple[str,  str, str, int, str]] = []
         for sup, word in zip(sen[2], sen[3]):
-            sent.append((word["form"], word["upos"], sup))
+            sent.append((
+                word["form"], word["upos"],
+                sup, word["head"], word["deprel"]))
 
         sents.append(sent)
 
