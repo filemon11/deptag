@@ -5,7 +5,7 @@ import bitsandbytes as bnb
 
 from . import losses, biaffine
 
-from transformers import AutoModel
+from transformers import AutoModel, BertModel
 
 
 class ModelForTagging(nn.Module):
@@ -15,6 +15,7 @@ class ModelForTagging(nn.Module):
         self.model_path: pathlib.Path = config.task_specific_params[
             'model_path']
         self.use_pos: bool = config.task_specific_params['use_pos']
+        self.train_sup: bool = config.task_specific_params['train_sup']
         self.num_pos_tags: int = config.task_specific_params['num_pos_tags']
 
         self.pos_emb_dim: int = config.task_specific_params['pos_emb_dim']
@@ -23,7 +24,8 @@ class ModelForTagging(nn.Module):
         self.transformer_layers = config.task_specific_params[
             "transformer_layers"]
 
-        self.bert = AutoModel.from_pretrained(self.model_path, config=config)
+        self.bert: BertModel = AutoModel.from_pretrained(
+            self.model_path, config=config)
         if self.use_pos:
             self.pos_encoder = nn.Sequential(
                 bnb.nn.StableEmbedding(
@@ -38,7 +40,11 @@ class ModelForTagging(nn.Module):
             + (self.pos_emb_dim if self.use_pos else 0)
         )
 
-        self.input_projection = nn.Linear(
+        self.input_projection_parse = nn.Linear(
+            transformer_input_dim, config.hidden_size)
+        self.input_projection_sup = nn.Linear(
+            transformer_input_dim, config.hidden_size)
+        self.input_projection_pos = nn.Linear(
             transformer_input_dim, config.hidden_size)
 
         if self.transformer_layers > 0:
@@ -60,22 +66,27 @@ class ModelForTagging(nn.Module):
             )
 
         self.dropout = nn.Dropout(self.dropout_rate)
-        self.projection = nn.Sequential(
-            nn.Linear(config.hidden_size, config.num_labels)
-        )
+        self.projection = None
+        if self.train_sup:
+            self.projection = nn.Sequential(
+                nn.Linear(config.hidden_size, config.num_labels))
         self.pos_projection = None
         if config.task_specific_params["train_pos"]:
             self.pos_projection = nn.Sequential(
                 nn.Linear(config.hidden_size, self.num_pos_tags)
             )
 
-        self.biaffine = biaffine.make_model(
-            config.hidden_size,
-            config.task_specific_params["mlp_arc_hidden"],
-            config.task_specific_params["mlp_lab_hidden"],
-            config.task_specific_params["mlp_dropout"],
-            config.task_specific_params["mlp_num_labels"],
-        )
+        self.biaffine = None
+        if (
+                config.task_specific_params["mlp_arc_hidden"] is not None
+                or config.task_specific_params["mlp_lab_hidden"] is not None):
+            self.biaffine = biaffine.make_model(
+                config.hidden_size,
+                config.task_specific_params["mlp_arc_hidden"],
+                config.task_specific_params["mlp_lab_hidden"],
+                config.task_specific_params["mlp_dropout"],
+                config.task_specific_params["mlp_num_labels"],
+            )
 
     def forward(
             self,
@@ -89,7 +100,6 @@ class ModelForTagging(nn.Module):
             heads=None,
             deprel_ids=None,
             output_attentions=None,
-            output_hidden_states=None,
             report_loss: bool = False,
             printinfo: bool = False,
     ):
@@ -99,56 +109,82 @@ class ModelForTagging(nn.Module):
             head_mask=head_mask,
             inputs_embeds=inputs_embeds,
             output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
+            output_hidden_states=True,
         )
+        token_repr_parse = outputs["hidden_states"][12]
+        token_repr_sup = outputs["hidden_states"][8]
+        token_repr_pos = outputs["hidden_states"][4]
+
         if self.use_pos:
             pos_encodings = self.pos_encoder(pos_ids)
-            token_repr = torch.cat([outputs[0], pos_encodings], dim=-1)
+            token_repr_parse = torch.cat(
+                [token_repr_parse, pos_encodings], dim=-1)
         else:
-            token_repr = outputs[0]
+            token_repr_parse = outputs[0]
 
-        token_repr = torch.cat(
-            [token_repr, self.endofword_embedding((pos_ids != 0).long())],
+        token_repr_parse = torch.cat(
+            [token_repr_parse, self.endofword_embedding(
+                (pos_ids != 0).long())],
+            dim=-1)
+        token_repr_sup = torch.cat(
+            [token_repr_sup, self.endofword_embedding((pos_ids != 0).long())],
+            dim=-1)
+        token_repr_pos = torch.cat(
+            [token_repr_pos, self.endofword_embedding((pos_ids != 0).long())],
             dim=-1)
 
-        token_repr = self.input_projection(token_repr)
+        token_repr_parse = self.input_projection_parse(token_repr_parse)
+        token_repr_sup = self.input_projection_sup(token_repr_sup)
+        token_repr_pos = self.input_projection_pos(token_repr_pos)
 
         if self.transformer_layers > 0:
             padding_mask = attention_mask == 0
-            token_repr = self.transformer(
-                token_repr,
+            token_repr_parse = self.transformer(
+                token_repr_parse,
                 src_key_padding_mask=padding_mask
             )
 
-        tag_logits = self.projection(self.dropout(token_repr))
+        tag_logits = None
+        if self.projection is not None:
+            tag_logits = self.projection(self.dropout(token_repr_sup))
 
         pos_logits = None
         if self.pos_projection is not None:
-            pos_logits = self.pos_projection(self.dropout(token_repr))
+            pos_logits = self.pos_projection(self.dropout(token_repr_pos))
 
-        S_arc, S_lab = self.biaffine(token_repr)
+        S_arc = None
+        S_lab = None
+        if self.biaffine is not None:
+            S_arc, S_lab = self.biaffine(token_repr_parse)
 
         loss = None
         pos_loss = None
         arc_loss = None
         label_loss = None
-        if labels is not None and (self.training or report_loss):
+        if (
+                labels is not None and (self.training or report_loss)
+                and tag_logits is not None):
             loss = losses.calc_loss_helper(
                 tag_logits, labels, attention_mask.bool(),
                 printinfo=printinfo
             )
         if self.pos_projection is not None:
+            assert pos_logits is not None
             pos_loss = losses.calc_loss_helper(
                 pos_logits, pos_ids, attention_mask.bool(),
                 printinfo=printinfo
             )
         if heads is not None:
-            arc_loss = self.biaffine.arc_loss(
-                S_arc, heads, attention_mask.bool(), printinfo=printinfo)
-        if self.biaffine.lab_mlp_d is not None:
-            label_loss = self.biaffine.lab_loss(
-                S_lab, heads, deprel_ids, attention_mask.bool(),
-                printinfo=printinfo)
+            if self.biaffine is not None:
+                if self.biaffine.arc_mlp_d is not None:
+                    arc_loss = self.biaffine.arc_loss(
+                        S_arc, heads, attention_mask.bool(),
+                        printinfo=printinfo)
+                    # print("arc_loss", arc_loss)
+                if self.biaffine.lab_mlp_d is not None:
+                    label_loss = self.biaffine.lab_loss(
+                        S_lab, heads, deprel_ids, attention_mask.bool(),
+                        printinfo=printinfo)
 
         return (
             loss, tag_logits, pos_loss, pos_logits,

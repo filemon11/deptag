@@ -1,10 +1,12 @@
 import torch
 import torch.nn.functional as F
+import numpy as np
 
 
 # @torch.compile
 def calc_loss_helper(
-        logits, labels, attention_mask, printinfo: bool = False):
+        logits: torch.Tensor, labels: torch.Tensor, attention_mask,
+        printinfo: bool = False):
     # shape: (batch_size, seq_len, num_tags) -> (batch_size, num_tags, seq_len)
     logits = torch.movedim(logits, -1, 1)
 
@@ -16,10 +18,11 @@ def calc_loss_helper(
     loss = F.cross_entropy(
         logits, labels, ignore_index=-1, reduction="mean")
 
-    logits_wo_ignore = logits.transpose(-1, -2)[labels != -1]
-    labels_wo_ignore = labels[labels != -1]
-
     if printinfo:
+        logits_wo_ignore = logits.transpose(-1, -2)[labels != -1]
+
+        labels_wo_ignore = labels[labels != -1]
+
         logits_wo_ignore_mask = (
             logits_wo_ignore.argmax(-1) == labels_wo_ignore)
 

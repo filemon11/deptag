@@ -123,7 +123,8 @@ class TaggingDataset(torch.utils.data.Dataset):
         # necessary to remove soft-hyphens from Romanian RRT dataset
 
         heads: torch.Tensor = torch.tensor(
-            [word[3] for word in sent], dtype=torch.long) - 1
+            [word[3] for word in sent], dtype=torch.long) # - 1 
+        # use BOS token as root
 
         pos_tags = [self.pos_dict.get(w[1], 0) for w in sent]
         deprel_tags = [self.deprel_dict.get(w[4], 0) for w in sent]
@@ -139,8 +140,8 @@ class TaggingDataset(torch.utils.data.Dataset):
 
         input_ids = torch.tensor(encoded['input_ids'], dtype=torch.long)
         end_of_word = torch.zeros_like(input_ids)
-        pos_ids = torch.zeros_like(input_ids)
-        deprel_ids = torch.zeros_like(input_ids)
+        pos_ids = torch.full_like(input_ids, -1)
+        deprel_ids = torch.full_like(input_ids, -1)
 
         tag_ids_: list[int] = [
             (self.tag_system[w[2]] if w[2] in self.tag_system else 0)
@@ -155,10 +156,24 @@ class TaggingDataset(torch.utils.data.Dataset):
         pos_ids[word_end_positions] = torch.tensor(pos_tags, dtype=torch.long)
         deprel_ids[word_end_positions] = torch.tensor(
             deprel_tags, dtype=torch.long)
-        heads_long[word_end_positions] = heads
+        # print("heads", heads)
+        heads_long[word_end_positions] = heads  # [-1, x, y, -1, z]
+        # print("heads_long1", heads_long)
+        cumsum = torch.cumsum(heads_long == -1, dim=0) - 1  # [0, (0, 0), 1, (1,)]
+        # print("cumsum", cumsum)
+        head_cumsum = cumsum[~(heads_long == -1)]
+        # [1, (1, 1), 2, (2,)][False, True, True, False, True] -1 = [0, 0, 1]
+        head_cumsum = head_cumsum[heads-1 + ((heads - 1) < 0)]
+        head_cumsum[heads == 0] = 0
+        # [h_c[x], h_c[y], h_c[z]]
+
+        # print("head_cumsum", head_cumsum)
+
+        heads_long[word_end_positions] += head_cumsum
+        # print("heads_long", heads_long)
+        # print("pos_ids", pos_ids)
         end_of_word[word_end_positions] = 1
         end_of_word[word_end_positions[-1]] = 2  # last word
-
 
         return {
             'input_ids': input_ids,
@@ -190,12 +205,14 @@ class TaggingDataset(torch.utils.data.Dataset):
         end_of_word = pad_sequence(
             [item['end_of_word'] for item in batch],
             batch_first=True, padding_value=0)
+
         pos_ids = pad_sequence(
             [item['pos_ids'] for item in batch],
-            batch_first=True, padding_value=0)
+            batch_first=True, padding_value=-1)
+
         deprel_ids = pad_sequence(
             [item['deprel_ids'] for item in batch],
-            batch_first=True, padding_value=0)
+            batch_first=True, padding_value=-1)
 
         labels = pad_sequence(
             [item['labels'] for item in batch],
