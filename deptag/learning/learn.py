@@ -343,6 +343,21 @@ def train_command(args: settings.Settings):
             train_data, dev_data, prefix,
             sup2id, args.tagging.model_name, args.tagging.batch_size))
 
+    id2sup = {i: sup for sup, i in sup2id.items()}
+    id2relative_sup: dict[
+        int, None | extraction.ProjectiveTag]
+    id2relative_sup = {
+        i: extraction.process_relative_tag_to_projective(
+            extraction.convert_string_to_relative_relation(sup))
+        for i, sup in id2sup.items()}
+    lr_args = [
+        extraction.get_lr_argnum(tag)
+        for tag in id2relative_sup.values() if tag is not None]
+    max_l = max([lr[0] for lr in lr_args])
+    max_r = max([lr[1] for lr in lr_args])
+
+    id2pos = {i: pos for pos, i in train_dataset.pos_dict.items()}
+
     logging.info("Initializing the model")
     model = initialize_model(
         args.tagging.model_name, sup2id, args.tagging.model_path,
@@ -392,7 +407,6 @@ def train_command(args: settings.Settings):
         "cpu" if device == torch.device("cpu") else "cuda")
 
     optimizer.zero_grad()
-
 
     logging.info("Starting The Training Loop")
     model.train()
@@ -619,20 +633,43 @@ def train_command(args: settings.Settings):
                 case "cacc":
                     eval_metric = combined_acc
                 case "a*-las" | "a*-uas":
-                    raise NotImplementedError
-                    # TODO: implement return k best arcs and sups
-                    # provide k best arcs and k best sups to a* alg
-                    # get trees
-                    # get arcs from trees
-                    # (get combined deprels from trees
-                    # TODO create mapping: combined deprel x pos tag -> deprel
-                    # provide supertag predictions and combined deprels
-                    #   to function
-                    # get real deprels)
-                    # compute las/uas
+                    # TODO: test the deprel reconstructor
+                    # by giving the chart parser gold arc labels
+                    # and gold supertag labels
+                    assert arc_predictions is not None
+                    assert eval_arc_labels is not None
+                    assert predictions is not None
+                    assert pos_predictions is not None
+                    if epo > -1:
+                        head_preds_astar, deprel_preds_astar = parsing.chart(
+                            arc_predictions, eval_arc_labels,
+                            predictions, id2sup, id2pos,
+                            train_dataset.deprel_dict,
+                            pos_predictions.argmax(-1),
+                            max_l, max_r,
+                            root_sup_id=sup2id["*+root"],
+                            k_supertag=5, k_head_scores=5
+                        )
+                        # TODO: need to limit size of sentences?
+
+                        if args.tagging.eval_metric == "a*las":
+                            eval_metric = parsing.las(
+                                head_preds_astar, deprel_preds_astar,
+                                eval_arc_labels, eval_deprel_labels,
+                                eval_pos_labels, train_dataset.pos_dict["PUNCT"]
+                            )
+                        else:
+                            eval_metric = parsing.uas(
+                                head_preds_astar, eval_arc_labels,
+                                eval_pos_labels, train_dataset.pos_dict["PUNCT"])
+                    else:
+                        eval_metric = 0
+                        tol = 99999
+
                 case "mst-las" | "mst-uas":
                     assert arc_predictions is not None
                     assert eval_arc_labels is not None
+
                     mst = parsing.mst(
                         arc_predictions, eval_arc_labels)
                     if args.tagging.eval_metric == "mst_las":
@@ -654,13 +691,18 @@ def train_command(args: settings.Settings):
                             deprel_predictions_mst, axis=2)
                         # [B, S, N]
 
+                        print("PUNCT:", train_dataset.pos_dict["PUNCT"])
                         eval_metric = parsing.las(
                             mst, deprel_predictions_mst,
-                            eval_arc_labels, eval_deprel_labels
+                            eval_arc_labels, eval_deprel_labels,
+                            eval_pos_labels, train_dataset.pos_dict["PUNCT"]
                         )
+                        # TODO: implement punctuation ignore option
                     else:
                         eval_metric = parsing.uas(
-                            mst, eval_arc_labels)
+                            mst, eval_arc_labels,
+                            eval_pos_labels, train_dataset.pos_dict["PUNCT"]
+                        )
 
                     # run mst, get heads
                     # (select deprels using mst heads)

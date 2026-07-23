@@ -64,17 +64,18 @@ class TaggingDataset(torch.utils.data.Dataset):
 
         if "train" in split and max_train_len is not None:
             # To speed up training, we only train on short sentences.
-            print(len(self.trees), "sentences before filtering")
+            print(len(self.trees), f"sentences from {split} before filtering")
             self.trees = [
                 sent for sent in self.trees if (
                     len(sent) <= max_train_len
                     and len(sent) >= 2)]
-            print(len(self.trees), "trees after filtering")
+            print(len(self.trees), f"trees from {split} after filtering")
         else:
             # speed up!
             self.trees = [
                 sent for sent in self.trees
                 if len(sent) <= max_train_len]
+            print(f"Loaded {len(self.trees)} sentences from {split}")
 
         if not os.path.exists(
                 f"./data/pos/pos.{dataset.lower()}.json"
@@ -113,7 +114,7 @@ class TaggingDataset(torch.utils.data.Dataset):
         return deprel_dict
 
     def __len__(self):
-        return len(self.trees)
+        return int(len(self.trees)/1)  # 24)
 
     def __getitem__(self, index: int):
         sent = self.trees[index]
@@ -123,7 +124,7 @@ class TaggingDataset(torch.utils.data.Dataset):
         # necessary to remove soft-hyphens from Romanian RRT dataset
 
         heads: torch.Tensor = torch.tensor(
-            [word[3] for word in sent], dtype=torch.long) # - 1 
+            [word[3] for word in sent], dtype=torch.long)  # - 1
         # use BOS token as root
 
         pos_tags = [self.pos_dict.get(w[1], 0) for w in sent]

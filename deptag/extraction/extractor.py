@@ -11,7 +11,8 @@ from collections import defaultdict, Counter
 
 from typing import (
     Sequence, Collection, Iterable,
-    Generator, Mapping, DefaultDict)
+    Generator, Mapping, DefaultDict,
+    Literal)
 
 # extract function
 # for each sentence:
@@ -22,8 +23,12 @@ from typing import (
 # func Iterator with return value (statistics)
 
 
+Aux = Literal["-", "<", ">"]
+
 RawArc = tuple[int, str]
 RawTag = tuple[Sequence[RawArc], RawArc | None, int]
+
+ProjectiveTag = tuple[list[str], list[str], Aux, str | None]
 
 
 def collect_relations(
@@ -674,6 +679,54 @@ def convert_string_to_relative_relation(relation: str) -> RelativeTag:
             current_item += char
     relative_list.append((current_type, current_item))
     return relative_list
+
+
+def process_relative_tag_to_projective(
+        supertag: RelativeTag
+        ) -> ProjectiveTag | None:
+    """Returns None of supertag is non-projective."""
+    l_args: list[str] = []
+    r_args: list[str] = []
+    aux: Aux = "-"
+    auxdep: str | None = None
+
+    args = list(supertag)
+
+    if not args[0][0] and args[0][0] is not None:
+        aux = "<"
+        auxdep = args[0][1]
+        args = args[1:]
+    if not args[-1][0] and args[-1][0] is not None:
+        assert aux == "-", "Found supertag with two adjunction nodess."
+        aux = ">"
+        auxdep = args[-1][1]
+        args = args[:-1]
+
+    check_left = True
+    for typ, dep in args:
+        if typ is None:
+            check_left = False
+        elif check_left:
+            if typ:
+                l_args.append(dep)
+            else:
+                return None
+        else:
+            if typ:
+                r_args.append(dep)
+            else:
+                return None
+    return l_args, r_args, aux, auxdep
+
+
+def get_lr_argnum(tag: ProjectiveTag) -> tuple[int, int]:
+    l_args = len(tag[0])
+    r_args = len(tag[1])
+    if tag[2] == "<":
+        l_args += 1
+    elif tag[2] == ">":
+        r_args += 1
+    return l_args, r_args
 
 
 def read(

@@ -20,7 +20,7 @@ def prepare_train(
     # -> word, pos, supertag
 
     sents: list[list[tuple[str, str, str, int, str]]] = []
-    sup2id: dict[str, int] = {}
+    sup2id: dict[str, int] = {"-root*": 0, "*+root": 1}
     for sen in extractor.extract(
             sentences,
             arguments,

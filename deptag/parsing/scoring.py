@@ -2,7 +2,14 @@ import numpy as np
 
 
 def las(predicted_heads: np.ndarray, predicted_deprels: np.ndarray,
-        gold_heads: np.ndarray, gold_deprels: np.ndarray):
+        gold_heads: np.ndarray, gold_deprels: np.ndarray,
+        gold_pos_tags: np.ndarray | None = None,
+        ignore_pos_tag_id: int | None = None) -> float:
+    if ignore_pos_tag_id is not None:
+        assert gold_pos_tags is not None
+        gold_heads = gold_heads.copy()
+        gold_heads[gold_pos_tags == ignore_pos_tag_id] = -1
+
     predicted_heads = predicted_heads[gold_heads != -1]
     # if predicted_head_matrix:
     #     predicted_heads.argmax(-1)
@@ -35,7 +42,14 @@ def las(predicted_heads: np.ndarray, predicted_deprels: np.ndarray,
 
 
 def uas(
-        predicted_heads: np.ndarray, gold_heads: np.ndarray) -> float:
+        predicted_heads: np.ndarray, gold_heads: np.ndarray,
+        gold_pos_tags: np.ndarray | None = None,
+        ignore_pos_tag_id: int | None = None) -> float:
+    if ignore_pos_tag_id is not None:
+        assert gold_pos_tags is not None
+        gold_heads = gold_heads.copy()
+        gold_heads[gold_pos_tags == ignore_pos_tag_id] = -1
+
     predicted_heads = predicted_heads[gold_heads != -1]
     # if predicted_head_matrix:
     #     predicted_heads = predicted_heads.argmax(-1)
