@@ -16,10 +16,18 @@ from . import model, dataset, evaluate
 from .. import extraction, data, settings, parsing
 import dataclasses
 
-
 from typing import Mapping, Sequence, Self, Type
 
-BERT = ("bert-base-multilingual-cased",)
+# torch.backends.cuda.enable_flash_sdp(False)
+# torch.backends.cuda.enable_mem_efficient_sdp(False)
+# torch.backends.cuda.enable_math_sdp(True)
+
+torch.set_float32_matmul_precision("medium")
+
+BERT = (
+    "bert-base-multilingual-cased",
+    "bert-base-multilingual-uncased",
+    "xlm-roberta-large")
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -163,7 +171,8 @@ def initialize_model(
     )
     if model_type in BERT:
         m = model.ModelForTagging(config=config)
-        # m = torch.compile(m)  # type: ignore
+        torch.compiler.reset()
+        # m = torch.compile(m, dynamic=True)  # type: ignore
     else:
         logging.error("Invalid model type")
         return None
@@ -656,12 +665,15 @@ def train_command(args: settings.Settings):
                             eval_metric = parsing.las(
                                 head_preds_astar, deprel_preds_astar,
                                 eval_arc_labels, eval_deprel_labels,
-                                eval_pos_labels, train_dataset.pos_dict["PUNCT"]
+                                # eval_pos_labels,
+                                # train_dataset.pos_dict["PUNCT"]
                             )
                         else:
                             eval_metric = parsing.uas(
                                 head_preds_astar, eval_arc_labels,
-                                eval_pos_labels, train_dataset.pos_dict["PUNCT"])
+                                # eval_pos_labels,
+                                # train_dataset.pos_dict["PUNCT"]
+                            )
                     else:
                         eval_metric = 0
                         tol = 99999
@@ -1070,3 +1082,7 @@ def predict_command(args: settings.Settings):
             #         fout.write(
             #             (sup_out) + "\n")
             fout.write("\n")
+
+# TODO: check RoBERTa, BERT-large
+
+# TODO: check A* LAS without deprel learning

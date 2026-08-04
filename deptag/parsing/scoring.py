@@ -57,6 +57,3 @@ def uas(
     gold_heads = gold_heads[gold_heads != -1]
 
     return (predicted_heads == gold_heads).mean().item()
-
-# TODO: implement ignoring punctuation in eval
-# by providing gold pos tags (PUNCT)

@@ -24,8 +24,8 @@ class ModelForTagging(nn.Module):
         self.transformer_layers = config.task_specific_params[
             "transformer_layers"]
 
-        self.bert: BertModel = AutoModel.from_pretrained(
-            self.model_path, config=config)
+        self.bert: BertModel = torch.compile(AutoModel.from_pretrained(
+            self.model_path, config=config))
         if self.use_pos:
             self.pos_encoder = nn.Sequential(
                 bnb.nn.StableEmbedding(
@@ -87,6 +87,7 @@ class ModelForTagging(nn.Module):
                 config.task_specific_params["mlp_dropout"],
                 config.task_specific_params["mlp_num_labels"],
             )
+            self.biaffine.compile()  # (dynamic=True)
 
     def forward(
             self,
@@ -111,9 +112,11 @@ class ModelForTagging(nn.Module):
             output_attentions=output_attentions,
             output_hidden_states=True,
         )
-        token_repr_parse = outputs["hidden_states"][12]
-        token_repr_sup = outputs["hidden_states"][8]
-        token_repr_pos = outputs["hidden_states"][4]
+        num_layers = len(outputs["hidden_states"])-1
+        token_repr_parse = outputs["hidden_states"][num_layers]
+        token_repr_sup = outputs["hidden_states"][int(num_layers*(2/3))]
+        token_repr_pos = outputs["hidden_states"][int(num_layers*(1/3))]
+        # print(num_layers, int(num_layers*(2/3)), int(num_layers*(1/3)))
 
         if self.use_pos:
             pos_encodings = self.pos_encoder(pos_ids)
@@ -155,7 +158,7 @@ class ModelForTagging(nn.Module):
         S_arc = None
         S_lab = None
         if self.biaffine is not None:
-            S_arc, S_lab = self.biaffine(token_repr_parse)
+            S_arc, S_lab = self.biaffine(token_repr_parse.contiguous())
 
         loss = None
         pos_loss = None

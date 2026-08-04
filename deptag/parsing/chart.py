@@ -4,6 +4,7 @@ from math import inf
 
 import frozendict
 import heapdict  # type: ignore
+import heapq
 
 import tqdm
 
@@ -16,10 +17,12 @@ from timeit import default_timer as timer
 from datetime import timedelta
 
 from collections import namedtuple, deque
+import itertools
 
 from typing import (
     Self, Literal, Mapping, Callable,
-    cast, Any, Collection)
+    Any, Collection, Generic, Hashable,
+    TypeVar)
 
 
 Aux = Literal["-", "<", ">"]
@@ -51,32 +54,25 @@ class Weight():
     def __float__(self) -> float:
         return self.sum
 
-    def lt(self, other: "Weight") -> bool:
-        # if isinstance(other, (float, int)):
-        #     return self.sum < other
-        return self.sum < other.sum
+    # def lt(self, other: "Weight") -> bool:
+    #     return self.sum < other.sum
 
     def __lt__(self, other: "Weight") -> bool:
-        # if isinstance(other, (float, int)):
-        #     return self.sum < other
         return self.sum < other.sum
 
-    # def __gt__(self, other: Self) -> bool:
-    #     if isinstance(other, (float, int)):
-    #         return self.sum > other
-    #     return self.sum > other.sum
+    # def __lt__(self, other: object) -> bool:
+    #     if not isinstance(other, Weight):
+    #         return NotImplemented
+
+    #     if self.sum != other.sum:
+    #         return self.sum < other.sum
+
+    #     return self.inside > other.inside
 
     def __eq__(self, other: Any) -> bool:
         if not isinstance(other, Weight):
             return NotImplemented
-        return self.sum == other.sum
-
-        # if isinstance(other, (float, int)):
-        #     return self.sum == other
-        # elif isinstance(other, Weight):
-        #     return self.sum == other.sum
-        # else:
-        #     raise NotImplementedError
+        return self.sum == other.sum   # and self.inside == other.inside
 
     def to_array(self) -> np.ndarray:
         return np.array(
@@ -101,10 +97,6 @@ class WeightPointer(Weight):
             back1: "Item",
             back2: "Item",
             supertag_ind: int):
-        # if back1 is None:
-        #     assert back2 is None, (
-        #        "Provided a second backpointer but backpointer"
-        #        " 1 is None.")
         super().__init__(inside, out_estimate)
         self.back1: Item = back1
         self.back2: Item = back2
@@ -167,12 +159,12 @@ class Item(_ItemTuple):
     @classmethod
     def unchecked(
             cls,
-            start: int,
-            end: int,
-            anchor: int,
+            start: int | None,
+            end: int | None,
+            anchor: int | None,
             l_args: int | None,
             r_args: int | None,
-            aux: int,
+            aux: int | None,
             ) -> Self:
         return _ItemTuple.__new__(
             cls,
@@ -299,6 +291,8 @@ class Item(_ItemTuple):
 
 AXIOM = Item(None, None, None, None, None, None)
 
+EntryType = tuple[Item, WeightPointer]
+
 
 class Chart():
     # index 1: span start, length: |w| + 1 (None)
@@ -322,24 +316,65 @@ class Chart():
 
         assert max_l < length, "max_l must be smaller than length"
 
+        # self._complete_by_start: list[list[list[
+        #     EntryType]]] = [
+        #     [[] for _ in range(4)]
+        #     for _ in range(length + 2)
+        # ]
+        self._complete_by_start_: list[list[list[list[
+                    EntryType]]]] = [
+                    [[[] for _ in range(length + 2)] for _ in range(4)]
+                    for _ in range(length + 2)
+                ]
+        # self._complete_by_end: list[list[list[EntryType]]] = [
+        #     [[] for _ in range(4)]
+        #     for _ in range(length + 2)
+        # ]
+        self._complete_by_end_: list[list[list[list[EntryType]]]] = [
+                [[[] for _ in range(length + 2)] for _ in range(4)]
+                for _ in range(length + 2)
+            ]
+
+        # Unswitched items:
+        # l_args is an integer and r_args is an integer.
+        # self._unswitched_by_start: list[list[EntryType]] = [
+        #     [] for _ in range(length + 2)
+        # ]
+        self._unswitched_by_start_: list[list[list[EntryType]]] = [
+            [[] for _ in range(max_l + 2)] for _ in range(length + 2)
+        ]
+
+        # Switched items:
+        # l_args is None and r_args is an integer.
+        # self._switched_by_end: list[list[
+        #     EntryType]] = [
+        #     [] for _ in range(length + 2)
+        # ]
+        self._switched_by_end_: list[list[list[
+            EntryType]]] = [
+            [[] for _ in range(max_r + 2)] for _ in range(length + 2)
+        ]
+
     @staticmethod
     def get_index(
-            p: tuple[int, int, int, int, int, int] | Item
+            p: Item
             ) -> tuple[int, int, int, int, int, int]:
-        if isinstance(p, Item):
-            p = Chart.item2chartidxs(p)
-        else:
-            assert len(p) == 6, f"Indices missing from '{p}'"
-        p = cast(tuple[int, int, int, int, int, int], p)
-        return p
+        return Chart.item2chartidxs(p)
+        # if isinstance(p, Item):
+        #     p = Chart.item2chartidxs(p)
+        # else:
+        #     assert len(p) == 6, f"Indices missing from '{p}'"
+        # p = cast(tuple[int, int, int, int, int, int], p)
+        # return p
 
     def __getitem__(
-            self, p: tuple[int, int, int, int, int, int] | Item
+            self, p: Item
             ) -> WeightPointer:
-        p = self.get_index(p)
-        weight_pointer: np.ndarray = self._chart[p]
-        assert len(
-            weight_pointer.shape) == 1 and weight_pointer.shape[-1] == 2+2*6+1
+        t = self.get_index(p)
+        weight_pointer: np.ndarray = self._chart[t]
+        # assert len(
+        #     weight_pointer.shape) == 1 and weight_pointer.shape[
+        # -1] == 2+2*6+1
         # print("weight_pointer", weight_pointer)
         return WeightPointer(
             inside=weight_pointer[0].item(),
@@ -352,18 +387,42 @@ class Chart():
             )
 
     def __setitem__(
-            self, p: tuple[int, int, int, int, int, int] | Item,
+            self, p: Item,
             weight_pointer: WeightPointer) -> None:
-        p = self.get_index(p)
+        t = self.get_index(p)
 
-        self._chart[p] = (
+        self._chart[t] = (
             *weight_pointer.to_array(),
             *self.item2chartidxs(weight_pointer.back1),
             *self.item2chartidxs(weight_pointer.back2),
             weight_pointer.supertag_ind)
 
+        # if not isinstance(p, Item):
+        #     p = self.chartidxs2item(p)
+        # start, end, anchor, l_args, r_args, aux
+        #   0     1     2       3        4     5
+        entry = p, weight_pointer
+
+        if t[4] == 0:
+
+            self._complete_by_start_[t[0]][t[5]][t[1]].append(
+                entry)
+            self._complete_by_end_[t[1]][t[5]][t[0]].append(
+                entry
+            )
+
+        elif t[3] == 0:
+            self._switched_by_end_[t[1]][t[4]].append(
+                entry
+            )
+
+        else:
+            self._unswitched_by_start_[t[0]][t[3]].append(
+                entry
+            )
+
     def peek(
-            self: Self, p: tuple[int, int, int, int, int, int] | Item
+            self: Self, p: Item
             ) -> None | WeightPointer:
         weight = self.__getitem__(p)
         if weight.sum < inf:
@@ -386,7 +445,7 @@ class Chart():
     def chartidxs2item(
             idxs: tuple[
                 int, int, int, int, int, int]) -> Item:
-        return Item(
+        return Item.unchecked(
             start=None if idxs[0] == 0 else idxs[0],
             end=None if idxs[1] == 0 else idxs[1],
             anchor=None if idxs[2] == 0 else idxs[2],
@@ -396,34 +455,238 @@ class Chart():
         )
 
 
-class Agenda():
+T = TypeVar("T", bound=Hashable)
+
+
+# class Agenda_(Generic[T]):
+#     def __init__(self) -> None:
+#         self._heap = heapdict.heapdict()
+
+#     def add_update(self, item: T, weight: WeightPointer) -> None:
+#         try:
+#             current_weight = self._heap[item]
+#             if weight.lt(current_weight):
+#                 self._heap[item] = weight
+#         except KeyError:
+#             self._heap[item] = weight
+
+#     def pop(self) -> tuple[T, WeightPointer]:
+#         item, weight = self._heap.popitem()
+#         return item, weight
+
+#     def __str__(self) -> str:
+#         items = list(self._heap)
+#         items = list(sorted(items, key=lambda x: self._heap[x].sum))
+#         return ", ".join(
+#             f'{str(self._heap[item])}:{str(item)}' for item in items)
+
+#     def __repr__(self) -> str:
+#         return str(self)
+
+#     @property
+#     def is_empty(self) -> bool:
+#         return len(self._heap) == 0
+
+
+class Agenda(Generic[T]):
+    """A mutable A* agenda using heapq and lazy deletion.
+
+    Items may receive improved weights while they are open. Old heap
+    entries remain in the heap and are discarded when encountered.
+    """
+
+    __slots__ = (
+        "_heap",
+        "_current",
+        "_counter",
+    )
+
     def __init__(self) -> None:
-        self._heap = heapdict.heapdict()
+        # Entries:
+        #
+        # (
+        #     f = inside + outside,
+        #     -inside,
+        #     insertion sequence,
+        #     item,
+        #     weight,
+        # )
+        #
+        # The unique sequence number ensures that Item objects are never
+        # compared by heapq.
+        self._heap: list[
+            tuple[float, float, int, T, WeightPointer]
+        ] = []
 
-    def add_update(self, item: Item, weight: WeightPointer) -> None:
-        try:
-            current_weight = self._heap[item]
-            if weight.lt(current_weight):
-                self._heap[item] = weight
-        except KeyError:
-            self._heap[item] = weight
+        # item -> (sequence number, current best WeightPointer)
+        self._current: dict[
+            T,
+            tuple[int, WeightPointer],
+        ] = {}
 
-    def pop(self) -> tuple[Item, WeightPointer]:
-        item, weight = self._heap.popitem()
-        return item, weight
+        self._counter = itertools.count()
 
-    def __str__(self) -> str:
-        items = list(self._heap)
-        items = list(sorted(items, key=lambda x: self._heap[x].sum))
-        return ", ".join(
-            f'{str(self._heap[item])}:{str(item)}' for item in items)
+    @staticmethod
+    def _priority(
+            weight: WeightPointer,
+            ) -> tuple[float, float]:
+        # Primary A* priority: smaller f = g + h.
+        #
+        # For equal f, prefer larger g. This moves the search
+        # toward more complete items.
+        return weight.sum, -weight.inside
 
-    def __repr__(self) -> str:
-        return str(self)
+    def add_update(
+            self,
+            item: T,
+            weight: WeightPointer,
+            ) -> bool:
+        """Insert an item or replace its open entry with a better one.
+
+        Returns
+        -------
+        bool
+            True when the agenda changed.
+        """
+        current = self._current.get(item)
+
+        if current is not None:
+            _, current_weight = current
+
+            # The outside estimate is a property of the item, so two
+            # derivations of the same item differ only in inside cost.
+            # if __debug__:
+            #     assert (
+            #         weight.out_estimate
+            #         == current_weight.out_estimate
+            #     ), (
+            #         "The same item received different outside "
+            #         "estimates."
+            #     )
+
+            if weight.inside >= current_weight.inside:
+                return False
+
+        sequence = next(self._counter)
+        self._current[item] = sequence, weight
+
+        f_score, inside_tiebreak = self._priority(weight)
+
+        heapq.heappush(
+            self._heap,
+            (
+                f_score,
+                inside_tiebreak,
+                sequence,
+                item,
+                weight,
+            ),
+        )
+
+        # Optional protection against an excessive number of stale
+        # entries.
+        if (
+            len(self._heap)
+            > 4 * len(self._current) + 1024
+        ):
+            self._rebuild()
+
+        return True
+
+    def pop(self) -> tuple[T, WeightPointer]:
+        """Remove and return the open item with lowest A* priority."""
+        heap = self._heap
+        current_entries = self._current
+
+        while heap:
+            (
+                _,
+                _,
+                sequence,
+                item,
+                weight,
+            ) = heapq.heappop(heap)
+
+            current = current_entries.get(item)
+
+            if current is None:
+                # The item has already been popped.
+                continue
+
+            if current[0] != sequence:
+                # A better entry was added after this one.
+                continue
+
+            del current_entries[item]
+            return item, weight
+
+        raise KeyError("Cannot pop from an empty agenda.")
+
+    def peek(self) -> tuple[T, WeightPointer]:
+        """Return the minimum item without removing it."""
+        heap = self._heap
+        current_entries = self._current
+
+        while heap:
+            (
+                _,
+                _,
+                sequence,
+                item,
+                weight,
+            ) = heap[0]
+
+            current = current_entries.get(item)
+
+            if current is not None and current[0] == sequence:
+                return item, weight
+
+            # Remove a stale minimum entry.
+            heapq.heappop(heap)
+
+        raise KeyError("Cannot peek into an empty agenda.")
+
+    def _rebuild(self) -> None:
+        """Discard all stale entries in linear time."""
+        self._heap = [
+            (
+                weight.sum,
+                -weight.inside,
+                sequence,
+                item,
+                weight,
+            )
+            for item, (sequence, weight)
+            in self._current.items()
+        ]
+
+        heapq.heapify(self._heap)
+
+    def __bool__(self) -> bool:
+        return bool(self._current)
+
+    def __len__(self) -> int:
+        return len(self._current)
 
     @property
     def is_empty(self) -> bool:
-        return len(self._heap) == 0
+        return not self._current
+
+    def __str__(self) -> str:
+        entries = sorted(
+            self._current.items(),
+            key=lambda entry: self._priority(
+                entry[1][1]
+            ),
+        )
+
+        return ", ".join(
+            f"{weight}:{item}"
+            for item, (_, weight) in entries
+        )
+
+    def __repr__(self) -> str:
+        return str(self)
 
 
 def item_axiom(idx: int, l_args: int, r_args, aux: int) -> Item:
@@ -713,36 +976,36 @@ class System():
         ]
 
         self._rules_complete_initial = (
-            self.left_subst_dep_unchecked_,
-            self.right_subst_dep_unchecked_,
+            self.left_subst_dep_unchecked_bucket_,
+            self.right_subst_dep_unchecked_bucket_,
         )
 
         self._rules_complete_left_aux = (
-            self.right_adjoin_dep_unchecked_,
+            self.right_adjoin_dep_unchecked_bucket_,
         )
 
         self._rules_complete_right_aux = (
-            self.left_adjoin_dep_unchecked_,
+            self.left_adjoin_dep_unchecked_bucket_,
         )
 
         self._rules_finish = (
             self.complete_unchecked_,
-            self.right_adjoin_head_unchecked_,
+            self.right_adjoin_head_unchecked_bucket_,
         )
 
         self._rules_right_arguments = (
-            self.right_subst_head_unchecked_,
-            self.right_adjoin_head_unchecked_,
+            self.right_subst_head_unchecked_bucket_,
+            self.right_adjoin_head_unchecked_bucket_,
         )
 
         self._rules_switch = (
             self.switch_unchecked_,
-            self.left_adjoin_head_unchecked_,
+            self.left_adjoin_head_unchecked_bucket_,
         )
 
         self._rules_left_arguments = (
-            self.left_subst_head_unchecked_,
-            self.left_adjoin_head_unchecked_,
+            self.left_subst_head_unchecked_bucket_,
+            self.left_adjoin_head_unchecked_bucket_,
         )
 
     @staticmethod
@@ -1061,6 +1324,33 @@ class System():
                         item_left_subst_unchecked(item, dep),
                         item, weight, dep, other_weight)
 
+    def left_subst_head_unchecked_bucket_(
+            self,
+            item: Item, weight: Weight
+            ) -> None:
+        start = item.start
+        l_args = item.l_args
+        minimum_start = (
+            l_args
+            + (1 if item.aux == L else 0)
+        )
+        candidates = self._chart._complete_by_end_[
+            start-1][N+1][minimum_start:]
+        add = self.add_if_finite_
+
+        for li in candidates:
+            for dep, other_weight in li:
+                # if dep.start < minimum_start:
+                #     continue
+
+                add(
+                    item_left_subst_unchecked(item, dep),
+                    item,
+                    weight,
+                    dep,
+                    other_weight,
+                )
+
     def left_subst_dep_(
             self,
             item: Item, weight: Weight
@@ -1098,6 +1388,53 @@ class System():
                                     item_left_subst_unchecked(head, item),
                                     head, other_weight, item, weight)
 
+    def left_subst_dep_unchecked_bucket_(
+            self,
+            item: Item,
+            weight: Weight,
+            ) -> None:
+        """Use the completed initial `item` as a left dependent."""
+        item_start = item.start
+        item_end = item.end
+
+        maximum_l_args = min(self._max_l, item_start)
+        candidates = self._chart._unswitched_by_start_[
+            item_end + 1][2:maximum_l_args+2]
+
+        length = self._length
+        max_r = self._max_r
+        add = self.add_if_finite_
+
+        for li in candidates:
+            for head, other_weight in li:
+                l_args = head.l_args
+                r_args = head.r_args
+                head_end = head.end
+                aux = head.aux
+
+                # if l_args < 1 or l_args > maximum_l_args:
+                #     continue
+
+                maximum_r_args = min(max_r, length - head_end)
+
+                if r_args > maximum_r_args:
+                    continue
+
+                if aux == L:
+                    if l_args >= maximum_l_args:
+                        continue
+                elif aux == R:
+                    if r_args >= maximum_r_args:
+                        continue
+
+                add(
+                    item_left_subst_unchecked(head, item),
+                    head,
+                    other_weight,
+                    item,
+                    weight,
+                )
+
     def right_subst_head_(
                 self,
                 item: Item, weight: Weight
@@ -1127,6 +1464,41 @@ class System():
                         item_right_subst_unchecked(item, dep),
                         item, weight, dep, other_weight)
 
+    def right_subst_head_unchecked_bucket_(
+            self,
+            item: Item,
+            weight: Weight,
+            ) -> None:
+        """Substitute a completed initial item to the right of `item`."""
+        end = item.end
+        r_args = item.r_args
+
+        dependent_start = end + 1
+
+        maximum_dep_end = (
+            self._length
+            - r_args
+            - (item.aux == R)
+            + 1
+        )
+
+        candidates = self._chart._complete_by_start_[
+            dependent_start][N+1][:maximum_dep_end+1]
+        add = self.add_if_finite_
+
+        for li in candidates:
+            for dep, other_weight in li:
+                # if dep.end > maximum_dep_end:  # type: ignore[operator]
+                #     continue
+
+                add(
+                    item_right_subst_unchecked(item, dep),
+                    item,
+                    weight,
+                    dep,
+                    other_weight,
+                )
+
     def right_subst_dep_(
             self,
             item: Item, weight: Weight
@@ -1151,11 +1523,6 @@ class System():
 
                 possible_aux = aux_check(
                     i-1, possible_r_args - r)
-                # possible_aux: tuple[Auxnum, ...] = (N,)
-                # if possible_r_args - r > 0:
-                #     possible_aux += (R,)
-                # if i > 1:
-                #     possible_aux += (L,)
                 for c in range(i, item.start):  # type: ignore
                     for aux in possible_aux:
                         head = Item.unchecked(
@@ -1166,6 +1533,48 @@ class System():
                             self.add_if_finite_(
                                 item_right_subst_unchecked(head, item),
                                 head, other_weight, item, weight)
+
+    def right_subst_dep_unchecked_bucket_(
+            self,
+            item: Item,
+            weight: Weight,
+            ) -> None:
+        """Use the completed initial `item` as a right dependent."""
+        item_start = item.start
+        item_end = item.end
+
+        maximum_r_args = min(
+            self._max_r,
+            self._length - item_end + 1,
+        )
+
+        candidates = self._chart._switched_by_end_[item_start - 1][
+            2:maximum_r_args+2]
+        add = self.add_if_finite_
+
+        for li in candidates:
+            for head, other_weight in li:
+                head_start = head.start
+                r_args = head.r_args
+                aux = head.aux
+
+                # if r_args < 1 or r_args > maximum_r_args:
+                #     continue
+
+                if aux == L:
+                    if head_start <= 1:
+                        continue
+                elif aux == R:
+                    if r_args >= maximum_r_args:
+                        continue
+
+                add(
+                    item_right_subst_unchecked(head, item),
+                    head,
+                    other_weight,
+                    item,
+                    weight,
+                )
 
     def left_adjoin_head_(
             self,
@@ -1192,6 +1601,38 @@ class System():
                     self.add_if_finite_(
                         item_left_adjoin_unchecked(item, dep),
                         item, weight, dep, other_weight)
+
+    def left_adjoin_head_unchecked_bucket_(
+            self,
+            item: Item,
+            weight: Weight,
+            ) -> None:
+        """Adjoin a completed left-adjunct item to the left of `item`."""
+        start = item.start
+        l_args = item.l_args
+
+        minimum_dep_start = (
+            l_args
+            + 1
+            + (item.aux == L)
+        )
+
+        candidates = self._chart._complete_by_end_[
+            start - 1][R+1][minimum_dep_start:]
+        add = self.add_if_finite_
+
+        for li in candidates:
+            for dep, other_weight in li:
+                # if dep.start < minimum_dep_start:  # type: ignore[operator]
+                #     continue
+
+                add(
+                    item_left_adjoin_unchecked(item, dep),
+                    item,
+                    weight,
+                    dep,
+                    other_weight,
+                )
 
     def left_adjoin_dep_(
                 self,
@@ -1227,6 +1668,63 @@ class System():
                                     item_left_adjoin_unchecked(head, item),
                                     head, other_weight, item, weight)
 
+    def left_adjoin_dep_unchecked_bucket_(
+            self,
+            item: Item,
+            weight: Weight,
+            ) -> None:
+        """Use completed left adjunct `item` as a left dependent."""
+        item_start = item.start
+        item_end = item.end
+
+        maximum_l_args = min(
+            self._max_l,
+            item_start - 1,
+        )
+
+        candidates = self._chart._unswitched_by_start_[item_end + 1][
+            :maximum_l_args+2]
+
+        length = self._length
+        max_r = self._max_r
+        add = self.add_if_finite_
+
+        for li in candidates:
+            for head, other_weight in li:
+                l_args = head.l_args
+                r_args = head.r_args
+                head_end = head.end
+                aux = head.aux
+
+                # Original:
+                #
+                # for l in range(0, maximum_l_args + 1)
+                # if l_args > maximum_l_args:
+                #     continue
+
+                maximum_r_args = min(max_r, length - head_end)
+
+                # Original:
+                #
+                # for r in range(0, maximum_r_args + 1)
+                if r_args > maximum_r_args:
+                    continue
+
+                if aux == L:
+                    if l_args >= maximum_l_args:
+                        continue
+                elif aux == R:
+                    if r_args >= maximum_r_args:
+                        continue
+
+                add(
+                    item_left_adjoin_unchecked(head, item),
+                    head,
+                    other_weight,
+                    item,
+                    weight,
+                )
+
     def right_adjoin_head_(
                 self,
                 item: Item, weight: Weight
@@ -1253,6 +1751,40 @@ class System():
                         item_right_adjoin_unchecked(item, dep),
                         item, weight, dep, other_weight)
 
+    def right_adjoin_head_unchecked_bucket_(
+            self,
+            item: Item,
+            weight: Weight,
+            ) -> None:
+        """Adjoin a completed right-adjunct item to the right of `item`."""
+        end = item.end
+        r_args = item.r_args
+
+        dependent_start = end + 1
+
+        maximum_dep_end = (
+            self._length
+            - r_args
+            - (item.aux == R)
+        )
+
+        candidates = self._chart._complete_by_start_[
+            dependent_start][L+1][:maximum_dep_end+1]
+        add = self.add_if_finite_
+
+        for li in candidates:
+            for dep, other_weight in li:
+                # if dep.end > maximum_dep_end:  # type: ignore[operator]
+                #     continue
+
+                add(
+                    item_right_adjoin_unchecked(item, dep),
+                    item,
+                    weight,
+                    dep,
+                    other_weight,
+                )
+
     def right_adjoin_dep_(
                 self,
                 item: Item, weight: Weight
@@ -1278,19 +1810,57 @@ class System():
 
                 for c in range(i, item.start):  # type: ignore
                     for aux in possible_aux:
-                        # print("aux", aux)
                         head = Item.unchecked(
                             i, item.start-1, c, None, r, aux)  # type: ignore
-                        # print("head", head)
                         other_weight = self._chart.peek(head)
-                        # print("other_weight", other_weight)
                         if other_weight is not None:
                             self.add_if_finite_(
                                 item_right_adjoin_unchecked(head, item),
                                 head, other_weight, item, weight)
 
+    def right_adjoin_dep_unchecked_bucket_(
+            self,
+            item: Item,
+            weight: Weight,
+            ) -> None:
+        """Use completed right adjunct `item` as a right dependent."""
+        item_start = item.start
+        item_end = item.end
+
+        maximum_r_args = min(
+            self._max_r,
+            self._length - item_end,
+        )
+
+        candidates = self._chart._switched_by_end_[item_start - 1][
+            :maximum_r_args+2]
+        add = self.add_if_finite_
+
+        for i in range(0, maximum_r_args+1):
+            for head, other_weight in candidates[i]:
+                head_start = head.start
+                r_args = i-1  # head.r_args
+                aux = head.aux
+
+                # if r_args > maximum_r_args:
+                #     continue
+
+                if aux == L:
+                    if head_start <= 1:
+                        continue
+                elif aux == R:
+                    if r_args == maximum_r_args:
+                        continue
+
+                add(
+                    item_right_adjoin_unchecked(head, item),
+                    head,
+                    other_weight,
+                    item,
+                    weight,
+                )
+
     def axiom(self) -> None:
-        # TODO: also make method add directly to Agenda
         for i in range(1, self._length+1):
             for sup_id in self._k_sup_inds[i-1]:
                 if sup_id.item() not in self._id2sup:

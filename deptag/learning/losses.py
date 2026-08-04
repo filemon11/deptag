@@ -1,9 +1,8 @@
 import torch
 import torch.nn.functional as F
-import numpy as np
 
 
-# @torch.compile
+# @torch.compile()  # (backend="aot_eager")
 def calc_loss_helper(
         logits: torch.Tensor, labels: torch.Tensor, attention_mask,
         printinfo: bool = False):
