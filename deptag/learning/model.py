@@ -40,6 +40,10 @@ class ModelForTagging(nn.Module):
             + (self.pos_emb_dim if self.use_pos else 0)
         )
 
+        self.pos_layer = config.task_specific_params["pos_layer"]
+        self.supertag_layer = config.task_specific_params["supertag_layer"]
+        self.parse_layer = config.task_specific_params["parse_layer"]
+
         self.input_projection_parse = nn.Linear(
             transformer_input_dim, config.hidden_size)
         self.input_projection_sup = nn.Linear(
@@ -113,10 +117,10 @@ class ModelForTagging(nn.Module):
             output_hidden_states=True,
         )
         num_layers = len(outputs["hidden_states"])-1
-        token_repr_parse = outputs["hidden_states"][num_layers]
-        token_repr_sup = outputs["hidden_states"][int(num_layers*(2/3))]
-        token_repr_pos = outputs["hidden_states"][int(num_layers*(1/3))]
-        # print(num_layers, int(num_layers*(2/3)), int(num_layers*(1/3)))
+        token_repr_parse = outputs["hidden_states"][self.parse_layer]
+        token_repr_sup = outputs["hidden_states"][self.supertag_layer]
+        token_repr_pos = outputs["hidden_states"][self.pos_layer]
+        # print(num_layers, round(num_layers*(2/3)), round(num_layers*(1/3)))
 
         if self.use_pos:
             pos_encodings = self.pos_encoder(pos_ids)

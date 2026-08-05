@@ -1,7 +1,7 @@
 import json
 import os
 
-import numpy as np
+# import numpy as np
 import torch
 from torch.nn.utils.rnn import pad_sequence
 import transformers
@@ -9,7 +9,7 @@ import transformers
 from typing import Mapping, Sequence, Iterable
 
 
-BERT_TOKEN_MAPPING = {
+PTB_TOKEN_MAPPING = {
     "-LRB-": "(",
     "-RRB-": ")",
     "-LCB-": "{",
@@ -36,7 +36,7 @@ BERT_TOKEN_MAPPING = {
 def ptb_unescape(sent: Iterable[str]) -> list[str]:
     cleaned_words: list[str] = []
     for word in sent:
-        word = BERT_TOKEN_MAPPING.get(word, word)
+        word = PTB_TOKEN_MAPPING.get(word, word)
         word = word.replace('\\/', '/').replace('\\*', '*')
         # Mid-token punctuation occurs in biomedical text
         word = word.replace('-LSB-', '[').replace('-RSB-', ']')
@@ -56,7 +56,11 @@ class TaggingDataset(torch.utils.data.Dataset):
             max_train_len=350):
         self.split = split
         self.trees = data
-        self.tokenizer: transformers.BertTokenizer = tokenizer
+        self.tokenizer: transformers.PreTrainedTokenizerBase = tokenizer
+        if not self.tokenizer.is_fast:
+            raise TypeError(
+                "TaggingDataset requires a fast tokenizer for word alignment."
+            )
         self.dataset = dataset
         self.tag_system = tag_system
         self.pad_token_id = self.tokenizer.pad_token_id
@@ -99,6 +103,104 @@ class TaggingDataset(torch.utils.data.Dataset):
                     f"./data/deprel/deprel.{dataset.lower()}.json", 'r') as fp:
                 self.deprel_dict = json.load(fp)
 
+    def _encode_words(
+            self,
+            words: Sequence[str],
+            ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Encode words and return final-subword positions.
+
+        Returns
+        -------
+        input_ids
+            Token IDs including the initial and final special tokens.
+        word_end_positions
+            For each input word, the position of its final subword in
+            input_ids.
+        """
+        encoded = self.tokenizer(
+            list(words),
+            is_split_into_words=True,
+            add_special_tokens=True,
+            truncation=False,
+            return_attention_mask=False,
+            return_token_type_ids=False,
+        )
+
+        input_ids = torch.tensor(
+            encoded["input_ids"],
+            dtype=torch.long,
+        )
+
+        word_ids = encoded.word_ids()
+
+        if word_ids is None:
+            raise RuntimeError(
+                "The tokenizer did not return word alignment information."
+            )
+
+        if len(word_ids) != len(input_ids):
+            raise RuntimeError(
+                "word_ids and input_ids have different lengths."
+            )
+
+        # Both BERT and RoBERTa/XLM-R place their sentence-level special
+        # token at position 0. This position is used as the dependency root.
+        if word_ids[0] is not None:
+            raise RuntimeError(
+                "The first token is not a special token and therefore "
+                "cannot be used as the artificial root."
+            )
+
+        if (
+            self.tokenizer.cls_token_id is not None
+            and input_ids[0].item() != self.tokenizer.cls_token_id
+        ):
+            raise RuntimeError(
+                f"Expected initial token ID "
+                f"{self.tokenizer.cls_token_id}, "
+                f"got {input_ids[0].item()}."
+            )
+
+        # Repeated assignment retains the final subword of each word.
+        word_end_positions = torch.full(
+            (len(words),),
+            fill_value=-1,
+            dtype=torch.long,
+        )
+
+        for token_position, word_index in enumerate(word_ids):
+            if word_index is not None:
+                word_end_positions[word_index] = token_position
+
+        missing = torch.nonzero(
+            word_end_positions < 0,
+            as_tuple=False,
+        ).flatten()
+
+        if len(missing) > 0:
+            missing_indices = missing.tolist()
+            missing_words = [words[i] for i in missing_indices]
+
+            raise ValueError(
+                f"The tokenizer produced no subwords for word indices "
+                f"{missing_indices}: {missing_words}"
+            )
+
+        model_max_length = self.tokenizer.model_max_length
+
+        # Some tokenizers use an extremely large sentinel value when there
+        # is no known maximum. BERT/RoBERTa normally provide a real limit.
+        has_real_limit = model_max_length < 1_000_000
+
+        if has_real_limit and len(input_ids) > model_max_length:
+            raise ValueError(
+                f"Sentence produces {len(input_ids)} subwords, but "
+                f"{self.tokenizer.name_or_path} supports at most "
+                f"{model_max_length}."
+            )
+
+        return input_ids, word_end_positions
+
     def get_pos_dict(self):
         pos_dict: dict[str, int] = {}
         for sent in self.trees:
@@ -130,16 +232,15 @@ class TaggingDataset(torch.utils.data.Dataset):
         pos_tags = [self.pos_dict.get(w[1], 0) for w in sent]
         deprel_tags = [self.deprel_dict.get(w[4], 0) for w in sent]
 
-        if 'albert' in str(type(self.tokenizer)):
-            # albert is case insensitive!
-            words = [w.lower() for w in words]
+        # encoded = self.tokenizer._encode_plus(' '.join(words))
+        # word_end_positions = [
+        #     encoded.char_to_token(i)
+        #     for i in np.cumsum([len(word) + 1 for word in words]) - 2]
 
-        encoded = self.tokenizer._encode_plus(' '.join(words))
-        word_end_positions = [
-            encoded.char_to_token(i)
-            for i in np.cumsum([len(word) + 1 for word in words]) - 2]
+        # input_ids = torch.tensor(encoded['input_ids'], dtype=torch.long)
 
-        input_ids = torch.tensor(encoded['input_ids'], dtype=torch.long)
+        input_ids, word_end_positions = self._encode_words(words)
+
         end_of_word = torch.zeros_like(input_ids)
         pos_ids = torch.full_like(input_ids, -1)
         deprel_ids = torch.full_like(input_ids, -1)
@@ -187,21 +288,25 @@ class TaggingDataset(torch.utils.data.Dataset):
 
     def collate(self, batch):
         # for GPT-2, self.pad_token_id is None
-        pad_token_id = (
-            self.pad_token_id if self.pad_token_id is not None
-            else -100)
+        # pad_token_id = (
+        #     self.pad_token_id if self.pad_token_id is not None
+        #     else -100)
+        if self.pad_token_id is None:
+            raise ValueError("The tokenizer has no padding token.")
+
         input_ids = pad_sequence(
             [item['input_ids'] for item in batch],
-            batch_first=True, padding_value=pad_token_id)
+            batch_first=True, padding_value=self.pad_token_id)
 
-        attention_mask = (input_ids != pad_token_id).float()
+        # attention_mask = (input_ids != pad_token_id).float()
+        attention_mask = input_ids.ne(self.pad_token_id)
 
-        # for GPT-2, change -100 back into 0
-        input_ids = torch.where(
-            input_ids == -100,
-            0,
-            input_ids
-        )
+        # # for GPT-2, change -100 back into 0
+        # input_ids = torch.where(
+        #     input_ids == -100,
+        #     0,
+        #     input_ids
+        # )
 
         end_of_word = pad_sequence(
             [item['end_of_word'] for item in batch],

@@ -123,38 +123,111 @@ def prepare_test_data(
     return test_dataset, test_dataloader
 
 
+SUPPORTED_BACKBONES = {
+    "bert",
+    "roberta",
+    "xlm-roberta",
+    "albert",
+}
+
+# def generate_config(
+#         model_type: str, tag_system: Mapping[str, int], model_path: str,
+#         train_pos: bool = True,
+#         num_pos_tags: int = 50, num_deprel_tags: int | None = None,
+#         train_arc: bool = False,
+#         train_sup: bool = True):
+#     if model_type in BERT:
+#         config = transformers.AutoConfig.from_pretrained(
+#             model_path,
+#             num_labels=len(tag_system)+1,
+#         )
+#         config.task_specific_params = {
+#                 'model_path': model_path,
+#                 'pos_emb_dim': 256,
+#                 'num_pos_tags': num_pos_tags+1,
+#                 # 'lstm_layers': 3,
+#                 'dropout': 0,  # 0.33,
+#                 'use_pos': False,
+#                 'n_heads': 12,
+#                 'transformer_layers': 0,
+#                 'train_pos': train_pos,
+#                 'mlp_arc_hidden': 500 if train_arc is not None else None,
+#                 'mlp_lab_hidden': 100 if num_deprel_tags is not None else None,
+#                 'mlp_dropout': 0.3,
+#                 'mlp_num_labels': (
+#                     num_deprel_tags+1 if num_deprel_tags is not None
+#                     else None),
+#                 'train_sup': train_sup,
+#         }
+#     else:
+#         logging.error("Invalid model type.")
+#         return
+#     return config
+
+
 def generate_config(
-        model_type: str, tag_system: Mapping[str, int], model_path: str,
+        model_type: str,
+        tag_system: Mapping[str, int],
+        model_path: str,
         train_pos: bool = True,
-        num_pos_tags: int = 50, num_deprel_tags: int | None = None,
+        num_pos_tags: int = 50,
+        num_deprel_tags: int | None = None,
         train_arc: bool = False,
-        train_sup: bool = True):
-    if model_type in BERT:
-        config = transformers.AutoConfig.from_pretrained(
-            model_path,
-            num_labels=len(tag_system)+1,
+        train_sup: bool = True,
+        ) -> transformers.PretrainedConfig:
+
+    config = transformers.AutoConfig.from_pretrained(
+        model_path,
+        num_labels=len(tag_system) + 1,
+    )
+
+    if config.model_type not in SUPPORTED_BACKBONES:
+        raise ValueError(
+            f"Unsupported Hugging Face model type "
+            f"{config.model_type!r} for checkpoint {model_path!r}."
         )
-        config.task_specific_params = {
-                'model_path': model_path,
-                'pos_emb_dim': 256,
-                'num_pos_tags': num_pos_tags+1,
-                # 'lstm_layers': 3,
-                'dropout': 0,  # 0.33,
-                'use_pos': False,
-                'n_heads': 12,
-                'transformer_layers': 0,
-                'train_pos': train_pos,
-                'mlp_arc_hidden': 500 if train_arc is not None else None,
-                'mlp_lab_hidden': 100 if num_deprel_tags is not None else None,
-                'mlp_dropout': 0.3,
-                'mlp_num_labels': (
-                    num_deprel_tags+1 if num_deprel_tags is not None
-                    else None),
-                'train_sup': train_sup,
-        }
-    else:
-        logging.error("Invalid model type.")
-        return
+
+    num_encoder_layers = config.num_hidden_layers
+
+    config.task_specific_params = {
+        "model_path": model_path,
+
+        # Architecture-dependent backbone properties.
+        "encoder_hidden_size": config.hidden_size,
+        "encoder_num_layers": num_encoder_layers,
+        "encoder_num_attention_heads": config.num_attention_heads,
+
+        "pos_emb_dim": 256,
+        "num_pos_tags": num_pos_tags + 1,
+        "dropout": 0.0,
+        "use_pos": False,
+
+        "n_heads": config.num_attention_heads,
+        "transformer_layers": 0,
+
+        # Relative layer selection:
+        # BERT-base: 4, 8, 12
+        # XLM-R-large: 8, 16, 24
+        "pos_layer": round(num_encoder_layers / 3),
+        "supertag_layer": round(2 * num_encoder_layers / 3),
+        "parse_layer": num_encoder_layers,
+
+        "train_pos": train_pos,
+
+        "mlp_arc_hidden": 500 if train_arc else None,
+
+        "mlp_lab_hidden": (
+            100 if num_deprel_tags is not None else None
+        ),
+        "mlp_dropout": 0.3,
+        "mlp_num_labels": (
+            num_deprel_tags + 1
+            if num_deprel_tags is not None
+            else None
+        ),
+        "train_sup": train_sup,
+    }
+
     return config
 
 
@@ -169,14 +242,17 @@ def initialize_model(
         num_pos_tags=num_pos_tags, num_deprel_tags=num_deprel_tags,
         train_arc=train_arc, train_sup=train_sup
     )
-    if model_type in BERT:
-        m = model.ModelForTagging(config=config)
-        torch.compiler.reset()
-        # m = torch.compile(m, dynamic=True)  # type: ignore
-    else:
-        logging.error("Invalid model type")
-        return None
-    return m
+    tagging_model = model.ModelForTagging(config=config)
+    torch.compiler.reset()
+    return tagging_model
+    # if model_type in BERT:
+    #     m = model.ModelForTagging(config=config)
+    #     torch.compiler.reset()
+    #     # m = torch.compile(m, dynamic=True)  # type: ignore
+    # else:
+    #     logging.error("Invalid model type")
+    #     return None
+    # return m
 
 
 def initialize_optimizer_and_scheduler(
