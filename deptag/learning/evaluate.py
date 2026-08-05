@@ -74,7 +74,7 @@ def predict(
 
         with torch.no_grad(), torch.amp.autocast(
                 "cpu" if device == torch.device("cpu") else "cuda",
-                enabled=True, dtype=torch.bfloat16
+                enabled=True, dtype=torch.float16
                 ):
             outputs = model(
                 **batch, report_loss=report_loss,
