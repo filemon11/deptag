@@ -7,7 +7,7 @@ from typing import DefaultDict
 
 
 UD_DIR = pathlib.Path(
-    "data", "Universal Dependencies 2.17", "ud-treebanks-v2.17")
+    "data", "Universal Dependencies 2.15", "ud-treebanks-v2.15")
 
 GOAL_DIR = UD_DIR / "UD_combined"  # pathlib.Path("data", "combined")
 pathlib.Path(GOAL_DIR).mkdir(parents=True, exist_ok=True)
