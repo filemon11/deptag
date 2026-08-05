@@ -3,7 +3,6 @@ from numba import njit, prange
 from math import inf
 
 import frozendict
-import heapdict  # type: ignore
 import heapq
 
 import tqdm
