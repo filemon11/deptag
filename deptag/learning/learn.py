@@ -22,6 +22,12 @@ from typing import Mapping, Sequence, Self, Type
 # torch.backends.cuda.enable_mem_efficient_sdp(False)
 # torch.backends.cuda.enable_math_sdp(True)
 
+import transformers.utils.output_capturing as hf_output_capturing
+
+# Work around Transformers 5.9 + PyTorch 2.6 Dynamo incompatibility.
+# This only changes the current Python process.
+hf_output_capturing.torch = torch  # type: ignore
+
 torch.set_float32_matmul_precision("medium")
 
 BERT = (

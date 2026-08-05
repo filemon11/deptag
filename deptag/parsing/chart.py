@@ -4,6 +4,7 @@ from math import inf
 
 import frozendict
 import heapq
+import os
 
 import tqdm
 
@@ -2803,6 +2804,22 @@ def process(
     return heads, deprels_
 
 
+def get_eval_workers() -> int:
+    value = os.environ.get("DEPTAG_EVAL_WORKERS")
+
+    if value is None:
+        # Safe fallback: never silently launch one process per node CPU.
+        return 1
+
+    workers = int(value)
+    if workers < 1:
+        raise ValueError(
+            f"DEPTAG_EVAL_WORKERS must be >= 1, got {workers}"
+        )
+
+    return workers
+
+
 def chart(
         score_matrix: np.ndarray,
         ignore_deprels: np.ndarray,
@@ -2943,7 +2960,7 @@ def chart(
     # num_workers = multiprocessing.cpu_count()
     # chunksize = max(1, (le + num_workers * 16 - 1) // (num_workers * 16))
     chunksize = 1
-    stack = multiprocessing.Pool().map(
+    stack = multiprocessing.Pool(processes=get_eval_workers()).map(
         process,
         tqdm.tqdm(
             zip(
