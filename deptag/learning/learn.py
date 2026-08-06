@@ -363,6 +363,10 @@ def get_accuracies(
             use_tensorboard, n_iter,
             typ="sup", k=k)
 
+    if k == 1:
+        return (
+            [dev_sup_acc], [dev_pos_acc],
+            [dev_arc_acc], [dev_deprel_acc])
     return dev_sup_acc, dev_pos_acc, dev_arc_acc, dev_deprel_acc
 
 
@@ -977,6 +981,18 @@ def evaluate_command(args: settings.Settings, k: int = 1):
     sup2id = initialize_tag_system(
         prefix, pathlib.Path(args.tagging.tag_vocab_path)
     )
+    id2sup = {i: sup for sup, i in sup2id.items()}
+    id2relative_sup: dict[
+        int, None | extraction.ProjectiveTag]
+    id2relative_sup = {
+        i: extraction.process_relative_tag_to_projective(
+            extraction.convert_string_to_relative_relation(sup))
+        for i, sup in id2sup.items()}
+    lr_args = [
+        extraction.get_lr_argnum(tag)
+        for tag in id2relative_sup.values() if tag is not None]
+    max_l = max([lr[0] for lr in lr_args])
+    max_r = max([lr[1] for lr in lr_args])
 
     writer = SummaryWriter(comment=args.tagging.model_name)
 
@@ -985,12 +1001,15 @@ def evaluate_command(args: settings.Settings, k: int = 1):
         test_data, prefix, sup2id, args.tagging.model_name,
         args.tagging.batch_size)
 
+    id2pos = {i: pos for pos, i in eval_dataset.pos_dict.items()}
+
     model = initialize_model(
         args.tagging.model_name, sup2id, args.tagging.model_path,
         num_pos_tags=len(eval_dataset.pos_dict),
         num_deprel_tags=len(
             eval_dataset.deprel_dict) if args.tagging.train_deprel else None,
         train_arc=args.tagging.train_arc, train_sup=args.tagging.train_sup)
+
     assert model is not None
 
     model.load_state_dict(
@@ -1008,6 +1027,16 @@ def evaluate_command(args: settings.Settings, k: int = 1):
         evaluate.predict(
             model, eval_dataloader, len(eval_dataset),
             len(sup2id), args.tagging.batch_size, device))
+    (
+        predictions, eval_labels,
+        pos_predictions, eval_pos_labels,
+        arc_predictions, eval_arc_labels,
+        deprel_predictions, eval_deprel_labels,
+        *_) = (
+        evaluate.predict(
+            model, eval_dataloader, len(eval_dataset),
+            len(sup2id), args.tagging.batch_size, device)
+        )
 
     dev_sup_accs, dev_pos_accs, dev_arc_accs, dev_deprel_accs = (
         get_accuracies(
@@ -1019,7 +1048,6 @@ def evaluate_command(args: settings.Settings, k: int = 1):
             k=k
             )
     )
-
     for k in range(1, k+1):
         if dev_sup_accs is not None:
             print(
@@ -1033,6 +1061,93 @@ def evaluate_command(args: settings.Settings, k: int = 1):
         if dev_deprel_accs is not None:
             print(
                 f"deprel_acc k={k}:", dev_deprel_accs[k-1])
+
+        # args.tagging.loss_ratio*dev_acc + (
+        # 1-args.tagging.loss_ratio)*dev_pos_acc
+        eval_metric: float
+        match args.tagging.eval_metric:
+            case "cacc":
+                pass  # TODO: maybe compute this...
+            case "a*-las" | "a*-uas":
+                assert arc_predictions is not None
+                assert eval_arc_labels is not None
+                assert predictions is not None
+                assert pos_predictions is not None
+                head_preds_astar, deprel_preds_astar = parsing.chart(
+                    arc_predictions, eval_arc_labels,
+                    predictions, id2sup, id2pos,
+                    eval_dataset.deprel_dict,
+                    pos_predictions.argmax(-1),
+                    max_l, max_r,
+                    root_sup_id=sup2id["*+root"],
+                    k_supertag=5, k_head_scores=5
+                )
+                # TODO: need to limit size of sentences?
+
+                if args.tagging.eval_metric == "a*las":
+                    eval_metric = parsing.las(
+                        head_preds_astar, deprel_preds_astar,
+                        eval_arc_labels, eval_deprel_labels,
+                        # eval_pos_labels,
+                        # train_dataset.pos_dict["PUNCT"]
+                    )
+                else:
+                    eval_metric = parsing.uas(
+                        head_preds_astar, eval_arc_labels,
+                        # eval_pos_labels,
+                        # train_dataset.pos_dict["PUNCT"]
+                    )
+
+            case "mst-las" | "mst-uas":
+                assert arc_predictions is not None
+                assert eval_arc_labels is not None
+
+                mst = parsing.mst(
+                    arc_predictions, eval_arc_labels)
+                if args.tagging.eval_metric == "mst_las":
+                    assert deprel_predictions is not None
+                    assert eval_deprel_labels is not None
+
+                    hds = mst + (mst < 0)
+                    # [B, S]
+                    hds = hds[..., np.newaxis, np.newaxis].repeat(
+                        deprel_predictions.shape[-1], axis=-1)
+                    # [B, S, 1, N]
+
+                    # deprel_predictions, [B, S, Slab, N]
+
+                    deprel_predictions_mst = np.take_along_axis(
+                        deprel_predictions, hds, axis=2)
+                    # [B, S, 1, N]
+                    deprel_predictions_mst = np.squeeze(
+                        deprel_predictions_mst, axis=2)
+                    # [B, S, N]
+
+                    print("PUNCT:", eval_dataset.pos_dict["PUNCT"])
+                    eval_metric = parsing.las(
+                        mst, deprel_predictions_mst,
+                        eval_arc_labels, eval_deprel_labels,
+                        eval_pos_labels, eval_dataset.pos_dict["PUNCT"]
+                    )
+                    # TODO: implement punctuation ignore option
+                else:
+                    eval_metric = parsing.uas(
+                        mst, eval_arc_labels,
+                        eval_pos_labels, eval_dataset.pos_dict["PUNCT"]
+                    )
+
+                # run mst, get heads
+                # (select deprels using mst heads)
+                # compute las/uas
+
+                # TODO: add las option for predicted deprel matrix or not
+                # then, select from matrix using predictions there
+            case _:
+                raise Exception(
+                    f"args.tagging.eval_metric '{args.tagging.eval_metric}"
+                    "' unknown")
+        print(
+            f"eval metric {args.tagging.eval_metric}:", eval_metric)
 
 
 def predict_command(args: settings.Settings):
