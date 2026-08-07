@@ -2,6 +2,8 @@ import numpy as np
 from numba import njit, prange
 from math import inf
 
+from ufal.chu_liu_edmonds import chu_liu_edmonds
+
 import frozendict
 import heapq
 import os
@@ -926,6 +928,8 @@ class System():
 
         kth_smallest = kth_smallest[
                 :, -self._k_head_scores]  # type: ignore
+
+        self._unmasked_head_scores = self._head_scores.copy()
 
         self._head_scores = self._head_scores.copy()
         self._head_scores[
@@ -2433,6 +2437,59 @@ class System():
                 cost,
             )
 
+    # def _write_fallback_component(
+    #         self,
+    #         item: Item,
+    #         weight_pointer: WeightPointer,
+    #         heads: list[int],
+    #         labels: list[int],
+    #         supertag_inds: list[int],
+    #         dependencies: list[str],
+    #         root_position: int,
+    #         ) -> None:
+    #     """Backtrack one complete fallback component into global arrays."""
+    #     assert item.is_complete
+    #     assert item.start is not None
+    #     assert item.end is not None
+    #     assert item.anchor is not None
+
+    #     (
+    #         _remaining_left_dependencies,
+    #         _remaining_right_dependencies,
+    #         auxiliary_dependency,
+    #     ) = self._backtrack_into(
+    #         item,
+    #         weight_pointer,
+    #         heads,
+    #         labels,
+    #         supertag_inds,
+    #         dependencies,
+    #     )
+
+    #     anchor_index = item.anchor - 1
+
+    #     # Internal dependents were assigned by _backtrack_into(), but the
+    #     # component anchor has no parent within its own derivation.
+    #     assert heads[anchor_index] == -1, (
+    #         f"Fallback component anchor {item.anchor} already received "
+    #         f"head {heads[anchor_index]} while backtracking {item}."
+    #     )
+
+    #     if item.anchor == root_position:
+    #         heads[anchor_index] = 0
+    #         labels[anchor_index] = 0
+    #         dependencies[anchor_index] = "root"
+    #     else:
+    #         # Artificially connect the disconnected component to the root.
+    #         heads[anchor_index] = root_position
+
+    #         if auxiliary_dependency is not None:
+    #             labels[anchor_index] = 1
+    #             dependencies[anchor_index] = auxiliary_dependency
+    #         else:
+    #             labels[anchor_index] = 0
+    #             dependencies[anchor_index] = "dep"
+
     def _write_fallback_component(
             self,
             item: Item,
@@ -2441,12 +2498,9 @@ class System():
             labels: list[int],
             supertag_inds: list[int],
             dependencies: list[str],
-            root_position: int,
-            ) -> None:
+            ) -> str | None:
         """Backtrack one complete fallback component into global arrays."""
         assert item.is_complete
-        assert item.start is not None
-        assert item.end is not None
         assert item.anchor is not None
 
         (
@@ -2464,27 +2518,11 @@ class System():
 
         anchor_index = item.anchor - 1
 
-        # Internal dependents were assigned by _backtrack_into(), but the
-        # component anchor has no parent within its own derivation.
-        assert heads[anchor_index] == -1, (
-            f"Fallback component anchor {item.anchor} already received "
-            f"head {heads[anchor_index]} while backtracking {item}."
-        )
+        # All internal arcs are reconstructed, but the component root
+        # deliberately remains unattached until the component-level MST.
+        assert heads[anchor_index] == -1
 
-        if item.anchor == root_position:
-            heads[anchor_index] = 0
-            labels[anchor_index] = 0
-            dependencies[anchor_index] = "root"
-        else:
-            # Artificially connect the disconnected component to the root.
-            heads[anchor_index] = root_position
-
-            if auxiliary_dependency is not None:
-                labels[anchor_index] = 1
-                dependencies[anchor_index] = auxiliary_dependency
-            else:
-                labels[anchor_index] = 0
-                dependencies[anchor_index] = "dep"
+        return auxiliary_dependency
 
     def fallback_backtrack(
             self,
@@ -2502,7 +2540,9 @@ class System():
         1. maximizes coverage by non-overlapping complete chart items;
         2. minimizes total inside cost among equally covering selections;
         3. fills remaining positions from their best lexical axioms;
-        4. connects disconnected component roots to the artificial root.
+        4. treats every reconstructed subtree/singleton as one component;
+        5. connects the components with a minimum-cost dependency tree
+        derived from the neural head scores.
         """
         length = self._length
 
@@ -2512,23 +2552,28 @@ class System():
                 f"sentence length {length}."
             )
 
-        # Dynamic program over sentence prefixes.
+        # ------------------------------------------------------------
+        # 1. Select the best set of non-overlapping complete components.
+        # ------------------------------------------------------------
+
         best_coverage = [0] * (length + 1)
         best_cost = [0.0] * (length + 1)
 
         previous_position = [0] * (length + 1)
+
         selected_entry: list[
             tuple[Item, WeightPointer, float] | None
         ] = [None] * (length + 1)
+
         entry: tuple[Item, WeightPointer, float] | None
 
         for end in range(1, length + 1):
-            # Do not select an item ending at `end`.
+            # Option 1: leave position `end` uncovered.
             best_coverage[end] = best_coverage[end - 1]
             best_cost[end] = best_cost[end - 1]
             previous_position[end] = end - 1
 
-            # Select one complete item ending at `end`.
+            # Option 2: select a complete item ending at `end`.
             for entry in self._fallback_complete_by_end[end].values():
                 item, _, item_cost = entry
 
@@ -2536,10 +2581,12 @@ class System():
                 assert start is not None
 
                 prefix = start - 1
+
                 candidate_coverage = (
                     best_coverage[prefix]
                     + end - start + 1
                 )
+
                 candidate_cost = (
                     best_cost[prefix]
                     + item_cost
@@ -2557,7 +2604,7 @@ class System():
                     previous_position[end] = prefix
                     selected_entry[end] = entry
 
-        # Recover the selected complete components.
+        # Recover selected components.
         selected_components: list[
             tuple[Item, WeightPointer]
         ] = []
@@ -2569,6 +2616,7 @@ class System():
 
             if entry is not None:
                 item, weight_pointer, _ = entry
+
                 selected_components.append(
                     (item, weight_pointer)
                 )
@@ -2577,32 +2625,55 @@ class System():
 
         selected_components.reverse()
 
+        # ------------------------------------------------------------
+        # 2. Reconstruct the selected components.
+        # ------------------------------------------------------------
+
         heads = [-1] * length
         labels = [-1] * length
         supertag_inds = [-1] * length
         dependencies = [""] * length
+
         covered = [False] * length
 
-        # Reconstruct every selected complete component.
+        # Information required for the component-level MST.
+        #
+        # All positions are one-based, like Item.anchor and UD heads.
+        component_tokens: list[list[int]] = []
+        component_anchors: list[int] = []
+        component_aux_dependencies: list[str | None] = []
+
         for item, weight_pointer in selected_components:
             assert item.start is not None
             assert item.end is not None
+            assert item.anchor is not None
 
-            self._write_fallback_component(
+            auxiliary_dependency = self._write_fallback_component(
                 item,
                 weight_pointer,
                 heads,
                 labels,
                 supertag_inds,
                 dependencies,
-                root_position,
+            )
+
+            # The complete chart item covers a contiguous span.
+            component_tokens.append(
+                list(range(item.start, item.end + 1))
+            )
+            component_anchors.append(item.anchor)
+            component_aux_dependencies.append(
+                auxiliary_dependency
             )
 
             covered[item.start - 1:item.end] = (
                 [True] * (item.end - item.start + 1)
             )
 
-        # Fill tokens not covered by complete components from lexical axioms.
+        # ------------------------------------------------------------
+        # 3. Turn every still-uncovered token into a singleton component.
+        # ------------------------------------------------------------
+
         for position in range(1, length + 1):
             index = position - 1
 
@@ -2612,92 +2683,257 @@ class System():
             entry = self._fallback_axiom[position]
 
             if entry is None:
-                supertag_inds[index] = 0  # -root*
+                # No lexical axiom survived at all. We still need a lexical
+                # representation so that this token can participate in the
+                # final dependency tree.
+                supertag_inds[index] = 0
 
-                if position == root_position:
-                    heads[index] = 0
-                    labels[index] = 1
-                    dependencies[index] = "root"
-                else:
-                    heads[index] = root_position
-                    labels[index] = 1
-                    dependencies[index] = "root"
+                auxiliary_dependency = None
 
-                continue
+            else:
+                axiom_item, axiom_weight, _ = entry
 
-            axiom_item, axiom_weight, _ = entry
+                (
+                    _left_dependencies,
+                    _right_dependencies,
+                    auxiliary_dependency,
+                ) = self._backtrack_into(
+                    axiom_item,
+                    axiom_weight,
+                    heads,
+                    labels,
+                    supertag_inds,
+                    dependencies,
+                )
 
-            (
-                _left_dependencies,
-                _right_dependencies,
-                auxiliary_dependency,
-            ) = self._backtrack_into(
-                axiom_item,
-                axiom_weight,
-                heads,
-                labels,
-                supertag_inds,
-                dependencies,
+                assert axiom_item.anchor is not None
+                assert axiom_item.anchor == position, (
+                    f"Fallback lexical axiom for position {position} "
+                    f"has anchor {axiom_item.anchor}."
+                )
+
+                # A lexical axiom has no internal parent.
+                assert heads[index] == -1
+
+            # Do NOT assign this token to the artificial root here.
+            # It is a singleton component and the MST will determine
+            # its head together with all other component roots.
+            component_tokens.append([position])
+            component_anchors.append(position)
+            component_aux_dependencies.append(
+                auxiliary_dependency
             )
 
-            # _backtrack_into() lexicalizes the token but does not assign
-            # a head to the root of this singleton component.
-            assert axiom_item.anchor is not None
-            anchor_index = axiom_item.anchor - 1
+        # ------------------------------------------------------------
+        # 4. Connect all components.
+        #
+        # The connector:
+        #
+        #   * keeps every internal A* dependency untouched;
+        #   * attaches only component anchors;
+        #   * permits any token of another component to serve as head;
+        #   * constructs costs
+        #
+        #       C[D, H] =
+        #           min_{h in H}
+        #               head_scores[anchor(D), h]
+        #
+        #   * uses Chu-Liu/Edmonds to obtain one rooted tree.
+        # ------------------------------------------------------------
 
-            if position == root_position:
-                heads[anchor_index] = 0
-                labels[anchor_index] = 1
-                dependencies[anchor_index] = "root"
-            else:
-                heads[anchor_index] = root_position
+        self._connect_fallback_components(
+            component_tokens,
+            component_anchors,
+            component_aux_dependencies,
+            heads,
+            labels,
+            dependencies,
+            root_position,
+        )
 
-                if auxiliary_dependency is not None:
-                    labels[anchor_index] = 1
-                    dependencies[anchor_index] = auxiliary_dependency
-                else:
-                    labels[anchor_index] = 0
-                    dependencies[anchor_index] = "root"
+        # ------------------------------------------------------------
+        # 5. Verify that the fallback really produced a complete parse.
+        # ------------------------------------------------------------
 
-        # missing_heads = [
-        #     position
-        #     for position, head in enumerate(heads, start=1)
-        #     if head < 0
-        # ]
-        # missing_labels = [
-        #     position
-        #     for position, label in enumerate(labels, start=1)
-        #     if label < 0
-        # ]
-        # missing_supertags = [
-        #     position
-        #     for position, tag in enumerate(supertag_inds, start=1)
-        #     if tag < 0
-        # ]
-        # missing_dependencies = [
-        #     position
-        #     for position, dependency in enumerate(
-        #         dependencies,
-        #         start=1,
-        #     )
-        #     if not dependency
-        # ]
-
-        # if (
-        #     missing_heads
-        #     or missing_labels
-        #     or missing_supertags
-        #     or missing_dependencies
-        # ):
-        #     raise RuntimeError(
-        #         "Fallback backtracking produced incomplete output: "
-        #         f"missing heads={missing_heads}, "
-        #         f"missing labels={missing_labels}, "
-        #         f"missing supertags={missing_supertags}, "
-        #         f"missing dependencies={missing_dependencies}."
-        #     )
+        assert all(head >= 0 for head in heads), heads
+        assert all(label >= 0 for label in labels), labels
+        assert all(index >= 0 for index in supertag_inds), supertag_inds
+        assert all(dependency for dependency in dependencies), dependencies
 
         return heads, labels, supertag_inds, dependencies
+
+    def _connect_fallback_components(
+            self,
+            component_tokens: list[list[int]],
+            component_anchors: list[int],
+            component_aux_dependencies: list[str | None],
+            heads: list[int],
+            labels: list[int],
+            dependencies: list[str],
+            root_position: int,
+            ) -> None:
+        """Connect fallback components according to neural head scores.
+
+        `component_tokens` and `component_anchors` contain one-based parser
+        positions.
+
+        Internal component arcs have already been reconstructed. Only each
+        component anchor lacks a head.
+        """
+        num_components = len(component_tokens)
+
+        assert num_components == len(component_anchors)
+        assert num_components == len(component_aux_dependencies)
+
+        if num_components == 0:
+            raise RuntimeError("No fallback components.")
+
+        # Find the component containing the artificial root.
+        root_components = [
+            component
+            for component, tokens in enumerate(component_tokens)
+            if root_position in tokens
+        ]
+
+        if len(root_components) != 1:
+            raise RuntimeError(
+                f"Expected one component containing root {root_position}, "
+                f"got {root_components}."
+            )
+
+        root_component = root_components[0]
+
+        if component_anchors[root_component] != root_position:
+            raise RuntimeError(
+                "Component containing the artificial root must itself "
+                "be rooted at the artificial root."
+            )
+
+        # UFAL expects node 0 to be the root, so reorder components.
+        component_order = [
+            root_component,
+            *(
+                component
+                for component in range(num_components)
+                if component != root_component
+            ),
+        ]
+
+        # contracted_costs[dependent_component, head_component]
+        contracted_costs = np.full(
+            (num_components, num_components),
+            np.inf,
+            dtype=np.float64,
+        )
+
+        # For every contracted edge, remember which actual token realizes
+        # the optimal head.
+        actual_heads = np.full(
+            (num_components, num_components),
+            -1,
+            dtype=np.int64,
+        )
+
+        for dependent_mst, dependent_component in enumerate(component_order):
+            if dependent_mst == 0:
+                # Artificial-root component receives no parent.
+                continue
+
+            dependent_anchor = component_anchors[dependent_component]
+            dependent_index = dependent_anchor - 1
+
+            for head_mst, head_component in enumerate(component_order):
+                if head_mst == dependent_mst:
+                    continue
+
+                candidate_positions = np.asarray(
+                    component_tokens[head_component],
+                    dtype=np.int64,
+                )
+
+                # Convert one-based parser positions to score-matrix indices.
+                candidate_indices = candidate_positions - 1
+
+                # head_scores[dependent, head]
+                candidate_costs = self._unmasked_head_scores[
+                    dependent_index,
+                    candidate_indices,
+                ]
+
+                best_local = int(np.argmin(candidate_costs))
+                best_cost = float(candidate_costs[best_local])
+
+                if not np.isfinite(best_cost):
+                    continue
+
+                contracted_costs[
+                    dependent_mst,
+                    head_mst,
+                ] = best_cost
+
+                actual_heads[
+                    dependent_mst,
+                    head_mst,
+                ] = candidate_positions[best_local]
+
+        # Self-components cannot be heads of themselves.
+        np.fill_diagonal(contracted_costs, np.inf)
+
+        # Root component must have no incoming edge.
+        contracted_costs[0, :] = np.inf
+
+        # UFAL maximizes scores; our matrix contains costs.
+        scores = -contracted_costs
+
+        # UFAL denotes impossible arcs with NaN.
+        scores[~np.isfinite(scores)] = np.nan
+
+        mst_heads, _mst_score = chu_liu_edmonds(scores)
+
+        # Artificial root.
+        root_index = root_position - 1
+        heads[root_index] = 0
+        labels[root_index] = 0
+        dependencies[root_index] = "root"
+
+        # Expand component-level edges back into token-level arcs.
+        for dependent_mst in range(1, num_components):
+            head_mst = int(mst_heads[dependent_mst])
+
+            dependent_component = component_order[dependent_mst]
+
+            dependent_anchor = component_anchors[
+                dependent_component
+            ]
+            dependent_index = dependent_anchor - 1
+
+            actual_head = int(
+                actual_heads[
+                    dependent_mst,
+                    head_mst,
+                ]
+            )
+
+            if actual_head < 1:
+                raise RuntimeError(
+                    f"No actual head for component edge "
+                    f"{head_mst} -> {dependent_mst}."
+                )
+
+            heads[dependent_index] = actual_head
+
+            auxiliary_dependency = (
+                component_aux_dependencies[
+                    dependent_component
+                ]
+            )
+
+            if auxiliary_dependency is not None:
+                labels[dependent_index] = 1
+                dependencies[dependent_index] = auxiliary_dependency
+            else:
+                labels[dependent_index] = 0
+                dependencies[dependent_index] = "dep"
 
 
 def process(
