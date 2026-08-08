@@ -81,14 +81,14 @@ def prepare_training_data(
         eval_data: Sequence[Sequence[tuple[str, str, str, int, str]]],
         dataset_name: str,
         tag_system: Mapping[str, int],
-        model_name: str,
+        model_path: str,
         batch_size: int
         ) -> tuple[
             dataset.TaggingDataset, dataset.TaggingDataset,
             DataLoader, DataLoader]:
 
     tokeniser = transformers.AutoTokenizer.from_pretrained(
-        model_name, truncation=True, use_fast=True)
+        model_path, truncation=True, use_fast=True)
 
     train_dataset = dataset.TaggingDataset(
         "train", tokeniser, tag_system, train_data, device, dataset_name)
@@ -111,12 +111,12 @@ def prepare_test_data(
         test_data: Sequence[Sequence[tuple[str, str, str, int, str]]],
         dataset_name: str,
         tag_system: Mapping[str, int],
-        model_name: str,
+        model_path: str,
         batch_size: int) -> tuple[dataset.TaggingDataset, DataLoader]:
 
-    print(f"Evaluating {model_name}")
+    print(f"Evaluating {model_path}")
     tokeniser = transformers.AutoTokenizer.from_pretrained(
-        model_name, truncation=True, use_fast=True)
+        model_path, truncation=True, use_fast=True)
     test_dataset = dataset.TaggingDataset(
         "test", tokeniser, tag_system, test_data, device,
         dataset_name
@@ -436,7 +436,7 @@ def train_command(args: settings.Settings):
     train_dataset, dev_dataset, train_dataloader, dev_dataloader = (
         prepare_training_data(
             train_data, dev_data, prefix,
-            sup2id, args.tagging.model_name, args.tagging.batch_size))
+            sup2id, args.tagging.model_path, args.tagging.batch_size))
 
     id2sup = {i: sup for sup, i in sup2id.items()}
     id2relative_sup: dict[
@@ -998,7 +998,7 @@ def evaluate_command(args: settings.Settings, k: int = 1):
 
     logging.info("Preparing Data")
     eval_dataset, eval_dataloader = prepare_test_data(
-        test_data, prefix, sup2id, args.tagging.model_name,
+        test_data, prefix, sup2id, args.tagging.model_path,
         args.tagging.batch_size)
 
     id2pos = {i: pos for pos, i in eval_dataset.pos_dict.items()}
@@ -1195,7 +1195,7 @@ def predict_command(args: settings.Settings):
 
     logging.info("Preparing Data")
     pred_dataset, pred_dataloader = prepare_test_data(
-        pred_data, prefix, sup2id, args.tagging.model_name,
+        pred_data, prefix, sup2id, args.tagging.model_path,
         args.tagging.batch_size)
 
     model = initialize_model(
