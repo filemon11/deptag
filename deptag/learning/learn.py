@@ -88,7 +88,7 @@ def prepare_training_data(
             DataLoader, DataLoader]:
 
     tokeniser = transformers.AutoTokenizer.from_pretrained(
-        model_path, truncation=True, use_fast=True)
+        model_path.split("/")[-1], truncation=True, use_fast=True)
 
     train_dataset = dataset.TaggingDataset(
         "train", tokeniser, tag_system, train_data, device, dataset_name)
@@ -116,7 +116,7 @@ def prepare_test_data(
 
     print(f"Evaluating {model_path}")
     tokeniser = transformers.AutoTokenizer.from_pretrained(
-        model_path, truncation=True, use_fast=True)
+        model_path.split("/")[-1], truncation=True, use_fast=True)
     test_dataset = dataset.TaggingDataset(
         "test", tokeniser, tag_system, test_data, device,
         dataset_name
@@ -1138,7 +1138,7 @@ def evaluate_command(args: settings.Settings, k: int = 1):
                     deprel_predictions_mst, axis=2)
                 # [B, S, N]
 
-                print("PUNCT:", eval_dataset.pos_dict["PUNCT"])
+                # print("PUNCT:", eval_dataset.pos_dict["PUNCT"])
                 eval_metric = parsing.las(
                     mst, deprel_predictions_mst,
                     eval_arc_labels, eval_deprel_labels,
