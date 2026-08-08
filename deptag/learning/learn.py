@@ -789,17 +789,17 @@ def train_command(args: settings.Settings):
                             deprel_predictions_mst, axis=2)
                         # [B, S, N]
 
-                        print("PUNCT:", train_dataset.pos_dict["PUNCT"])
+                        # print("PUNCT:", train_dataset.pos_dict["PUNCT"])
                         eval_metric = parsing.las(
                             mst, deprel_predictions_mst,
                             eval_arc_labels, eval_deprel_labels,
-                            eval_pos_labels, train_dataset.pos_dict["PUNCT"]
+                            # eval_pos_labels, train_dataset.pos_dict["PUNCT"]
                         )
                         # TODO: implement punctuation ignore option
                     else:
                         eval_metric = parsing.uas(
                             mst, eval_arc_labels,
-                            eval_pos_labels, train_dataset.pos_dict["PUNCT"]
+                            # eval_pos_labels, train_dataset.pos_dict["PUNCT"]
                         )
 
                     # run mst, get heads
@@ -1095,7 +1095,7 @@ def evaluate_command(args: settings.Settings, k: int = 1):
                 pos_predictions.argmax(-1),
                 max_l, max_r,
                 root_sup_id=sup2id["*+root"],
-                k_supertag=5, k_head_scores=5
+                k_supertag=20, k_head_scores=20
             )
             # TODO: need to limit size of sentences?
 
@@ -1142,13 +1142,13 @@ def evaluate_command(args: settings.Settings, k: int = 1):
                 eval_metric = parsing.las(
                     mst, deprel_predictions_mst,
                     eval_arc_labels, eval_deprel_labels,
-                    eval_pos_labels, eval_dataset.pos_dict["PUNCT"]
+                    # eval_pos_labels, eval_dataset.pos_dict["PUNCT"]
                 )
                 # TODO: implement punctuation ignore option
             else:
                 eval_metric = parsing.uas(
                     mst, eval_arc_labels,
-                    eval_pos_labels, eval_dataset.pos_dict["PUNCT"]
+                    # eval_pos_labels, eval_dataset.pos_dict["PUNCT"]
                 )
 
             # run mst, get heads
