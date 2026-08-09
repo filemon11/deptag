@@ -150,8 +150,8 @@ def predict(
                 # [batch, sent_len, n_labels]
 
                 deprel_predictions.append(deprel_logits.float().cpu().numpy())
-            deprel_labels = batch['deprel_ids'].int().cpu().numpy()
-            eval_deprel_labels.append(deprel_labels)
+        deprel_labels = batch['deprel_ids'].int().cpu().numpy()
+        eval_deprel_labels.append(deprel_labels)
 
         if outputs[0] is not None:
             assert isinstance(sup_losses, list)

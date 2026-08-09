@@ -660,6 +660,7 @@ def train_command(args: settings.Settings):
                     writer.add_scalar(
                         'DeprelLoss/dev', dev_deprel_loss, n_iter)
 
+            deprel_predictions_ = deprel_predictions
             if (
                     deprel_predictions is not None
                     and eval_deprel_labels is not None):
@@ -672,11 +673,11 @@ def train_command(args: settings.Settings):
 
                 # deprel_predictions, [B, S, Slab, N]
 
-                deprel_predictions = np.take_along_axis(
+                deprel_predictions_ = np.take_along_axis(
                     deprel_predictions, hds, axis=2)
                 # [B, S, 1, N]
-                deprel_predictions = np.squeeze(
-                    deprel_predictions, axis=2)
+                deprel_predictions_ = np.squeeze(
+                    deprel_predictions_, axis=2)
                 # [B, S, N]
 
             dev_sup_acc, dev_pos_acc, dev_arc_acc, dev_deprel_acc = (
@@ -685,7 +686,7 @@ def train_command(args: settings.Settings):
                     predictions, eval_labels,
                     pos_predictions, eval_pos_labels,
                     arc_predictions, eval_arc_labels,
-                    deprel_predictions, eval_deprel_labels
+                    deprel_predictions_, eval_deprel_labels
                     )
             )
 
@@ -781,6 +782,7 @@ def train_command(args: settings.Settings):
                         # [B, S, 1, N]
 
                         # deprel_predictions, [B, S, Slab, N]
+                        print(deprel_predictions.shape, hds.shape)
 
                         deprel_predictions_mst = np.take_along_axis(
                             deprel_predictions, hds, axis=2)
@@ -788,6 +790,8 @@ def train_command(args: settings.Settings):
                         deprel_predictions_mst = np.squeeze(
                             deprel_predictions_mst, axis=2)
                         # [B, S, N]
+                        deprel_predictions_mst = deprel_predictions_mst.argmax(-1)
+                        # [B, S]
 
                         # print("PUNCT:", train_dataset.pos_dict["PUNCT"])
                         eval_metric = parsing.las(
@@ -1026,25 +1030,36 @@ def evaluate_command(args: settings.Settings, k: int = 1):
         *_) = (
         evaluate.predict(
             model, eval_dataloader, len(eval_dataset),
-            len(sup2id), args.tagging.batch_size, device))
-    (
-        predictions, eval_labels,
-        pos_predictions, eval_pos_labels,
-        arc_predictions, eval_arc_labels,
-        deprel_predictions, eval_deprel_labels,
-        *_) = (
-        evaluate.predict(
-            model, eval_dataloader, len(eval_dataset),
-            len(sup2id), args.tagging.batch_size, device)
+            len(sup2id), args.tagging.batch_size, device,
+            deprels_matrix=True)
         )
 
+    deprel_predictions_ = deprel_predictions
+    if (
+            deprel_predictions is not None
+            and eval_deprel_labels is not None):
+        assert eval_arc_labels is not None
+        hds = eval_arc_labels + (eval_arc_labels < 0)
+        # [B, S]
+        hds = hds[..., np.newaxis, np.newaxis].repeat(
+            deprel_predictions.shape[-1], axis=-1)
+        # [B, S, 1, N]
+
+        # deprel_predictions, [B, S, Slab, N]
+
+        deprel_predictions_ = np.take_along_axis(
+            deprel_predictions, hds, axis=2)
+        # [B, S, 1, N]
+        deprel_predictions_ = np.squeeze(
+            deprel_predictions_, axis=2)
+        # [B, S, N]
     dev_sup_accs, dev_pos_accs, dev_arc_accs, dev_deprel_accs = (
         get_accuracies(
             writer, 0, args.tagging.use_tensorboard,
             predictions, eval_labels,
             pos_predictions, eval_pos_labels,
             arc_predictions, eval_arc_labels,
-            deprel_predictions, eval_deprel_labels,
+            deprel_predictions_, eval_deprel_labels,
             k=k
             )
     )
@@ -1137,6 +1152,8 @@ def evaluate_command(args: settings.Settings, k: int = 1):
                 deprel_predictions_mst = np.squeeze(
                     deprel_predictions_mst, axis=2)
                 # [B, S, N]
+                deprel_predictions_mst = deprel_predictions_mst.argmax(-1)
+                # [B, S]
 
                 # print("PUNCT:", eval_dataset.pos_dict["PUNCT"])
                 eval_metric = parsing.las(
