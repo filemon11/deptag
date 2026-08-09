@@ -104,6 +104,7 @@ class BiAffineParser(nn.Module):
             assert num_labels is not None
             self.lab_biaffine = BiAffine(mlp_lab_hidden, num_labels)
 
+    @torch.compile()
     def forward(
             self, h: torch.Tensor, *args, **kwargs
             ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
@@ -131,6 +132,7 @@ class BiAffineParser(nn.Module):
 
         return S_arc, S_lab
 
+    @torch.compile()
     def arc_loss(
             self, S_arc: torch.Tensor, heads: torch.Tensor,
             attention_mask: torch.Tensor,

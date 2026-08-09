@@ -99,7 +99,7 @@ class ModelForTagging(nn.Module):
                 config.task_specific_params["mlp_dropout"],
                 config.task_specific_params["mlp_num_labels"],
             )
-            self.biaffine.compile()  # (dynamic=True)
+            # self.biaffine.compile()  # (dynamic=True)
 
     def forward(
             self,
