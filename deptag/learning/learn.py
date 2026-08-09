@@ -747,6 +747,7 @@ def train_command(args: settings.Settings):
                             k_supertag=5, k_head_scores=5
                         )
                         # TODO: need to limit size of sentences?
+                        assert eval_deprel_labels is not None
 
                         if args.tagging.eval_metric == "a*-las":
                             eval_metric = parsing.las(

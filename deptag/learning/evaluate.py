@@ -238,13 +238,16 @@ def predict(
                     ((0, 0), (0, max_len - deprel_logits.shape[1]), (0, 0)),
                     'constant', constant_values=0)
                 for deprel_logits in deprel_predictions], axis=0)
+    else:
+        deprel_predictions_ = None
+
+    if len(eval_deprel_labels) > 0: 
         eval_deprel_labels_ = np.concatenate([
             np.pad(
                 deprel_labels, ((0, 0), (0, max_len - deprel_labels.shape[1])),
                 'constant', constant_values=-1)
             for deprel_labels in eval_deprel_labels], axis=0)
     else:
-        deprel_predictions_ = None
         eval_deprel_labels_ = None
 
     losses = 0
