@@ -747,14 +747,14 @@ def train_command(args: settings.Settings):
                         )
                         # TODO: need to limit size of sentences?
 
-                        if args.tagging.eval_metric == "a*las":
+                        if args.tagging.eval_metric == "a*-las":
                             eval_metric = parsing.las(
                                 head_preds_astar, deprel_preds_astar,
                                 eval_arc_labels, eval_deprel_labels,
                                 # eval_pos_labels,
                                 # train_dataset.pos_dict["PUNCT"]
                             )
-                        else:
+                        elif args.tagging.eval_metric == "a*-uas":
                             eval_metric = parsing.uas(
                                 head_preds_astar, eval_arc_labels,
                                 # eval_pos_labels,
@@ -770,7 +770,7 @@ def train_command(args: settings.Settings):
 
                     mst = parsing.mst(
                         arc_predictions, eval_arc_labels)
-                    if args.tagging.eval_metric == "mst_las":
+                    if args.tagging.eval_metric == "mst-las":
                         assert deprel_predictions is not None
                         assert eval_deprel_labels is not None
 
@@ -796,7 +796,7 @@ def train_command(args: settings.Settings):
                             # eval_pos_labels, train_dataset.pos_dict["PUNCT"]
                         )
                         # TODO: implement punctuation ignore option
-                    else:
+                    elif args.tagging.eval_metric == "mst-uas":
                         eval_metric = parsing.uas(
                             mst, eval_arc_labels,
                             # eval_pos_labels, train_dataset.pos_dict["PUNCT"]
@@ -1099,14 +1099,14 @@ def evaluate_command(args: settings.Settings, k: int = 1):
             )
             # TODO: need to limit size of sentences?
 
-            if args.tagging.eval_metric == "a*las":
+            if args.tagging.eval_metric == "a*-las":
                 eval_metric = parsing.las(
                     head_preds_astar, deprel_preds_astar,
                     eval_arc_labels, eval_deprel_labels,
                     # eval_pos_labels,
                     # train_dataset.pos_dict["PUNCT"]
                 )
-            else:
+            elif args.tagging.eval_metric == "a*-uas":
                 eval_metric = parsing.uas(
                     head_preds_astar, eval_arc_labels,
                     # eval_pos_labels,
@@ -1119,7 +1119,7 @@ def evaluate_command(args: settings.Settings, k: int = 1):
 
             mst = parsing.mst(
                 arc_predictions, eval_arc_labels)
-            if args.tagging.eval_metric == "mst_las":
+            if args.tagging.eval_metric == "mst-las":
                 assert deprel_predictions is not None
                 assert eval_deprel_labels is not None
 
@@ -1145,7 +1145,7 @@ def evaluate_command(args: settings.Settings, k: int = 1):
                     # eval_pos_labels, eval_dataset.pos_dict["PUNCT"]
                 )
                 # TODO: implement punctuation ignore option
-            else:
+            if args.tagging.eval_metric == "mst-uas":
                 eval_metric = parsing.uas(
                     mst, eval_arc_labels,
                     # eval_pos_labels, eval_dataset.pos_dict["PUNCT"]
