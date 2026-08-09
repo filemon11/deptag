@@ -32,7 +32,7 @@ class ModelForTagging(nn.Module):
         hf_output_capturing.torch = torch
         hf_output_capturing.maybe_install_capturing_hooks(self.bert)
 
-        self.bert: BertModel = torch.compile(self.bert)
+        # self.bert: BertModel = torch.compile(self.bert)
 
         if self.use_pos:
             self.pos_encoder = nn.Sequential(

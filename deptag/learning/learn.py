@@ -249,7 +249,7 @@ def initialize_model(
         train_arc=train_arc, train_sup=train_sup
     )
     tagging_model = model.ModelForTagging(config=config)
-    torch.compiler.reset()
+    # torch.compiler.reset()
     return tagging_model
     # if model_type in BERT:
     #     m = model.ModelForTagging(config=config)
