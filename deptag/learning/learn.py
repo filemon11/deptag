@@ -750,8 +750,26 @@ def train_command(args: settings.Settings):
                         assert eval_deprel_labels is not None
 
                         if args.tagging.eval_metric == "a*-las":
+                            assert deprel_predictions is not None
+                            # deprel_predictions, [B, S, Slab, N]
+                            hds = head_preds_astar + (head_preds_astar < 0)
+                            # [B, S]
+                            hds = hds[..., np.newaxis, np.newaxis].repeat(
+                                deprel_predictions.shape[-1], axis=-1)
+                            # [B, S, 1, N]
+                            print(deprel_predictions.shape, hds.shape)
+
+                            deprel_predictions = np.take_along_axis(
+                                deprel_predictions, hds, axis=2)
+                            # [B, S, 1, N]
+                            deprel_predictions = np.squeeze(
+                                deprel_predictions, axis=2)
+                            # [B, S, N]
+                            deprel_predictions = deprel_predictions.argmax(-1)
+                            # [B, S]
                             eval_metric = parsing.las(
-                                head_preds_astar, deprel_preds_astar,
+                                head_preds_astar, deprel_predictions,
+                                # deprel_preds_astar,
                                 eval_arc_labels, eval_deprel_labels,
                                 # eval_pos_labels,
                                 # train_dataset.pos_dict["PUNCT"]
@@ -783,8 +801,6 @@ def train_command(args: settings.Settings):
                         # [B, S, 1, N]
 
                         # deprel_predictions, [B, S, Slab, N]
-                        print(deprel_predictions.shape, hds.shape)
-
                         deprel_predictions_mst = np.take_along_axis(
                             deprel_predictions, hds, axis=2)
                         # [B, S, 1, N]
@@ -1116,9 +1132,29 @@ def evaluate_command(args: settings.Settings, k: int = 1):
             # TODO: need to limit size of sentences?
 
             if args.tagging.eval_metric == "a*-las":
+                assert deprel_predictions is not None
+
+                hds = head_preds_astar + (head_preds_astar < 0)
+                # [B, S]
+                hds = hds[..., np.newaxis, np.newaxis].repeat(
+                    deprel_predictions.shape[-1], axis=-1)
+                # [B, S, 1, N]
+
+                # deprel_predictions, [B, S, Slab, N]
+
+                deprel_predictions = np.take_along_axis(
+                    deprel_predictions, hds, axis=2)
+                # [B, S, 1, N]
+                deprel_predictions = np.squeeze(
+                    deprel_predictions, axis=2)
+                # [B, S, N]
+                deprel_predictions = deprel_predictions.argmax(-1)
+                # [B, S]
                 eval_metric = parsing.las(
-                    head_preds_astar, deprel_preds_astar,
-                    eval_arc_labels, eval_deprel_labels,
+                    head_preds_astar, deprel_predictions,
+                    # deprel_preds_astar,
+                    eval_arc_labels,
+                    eval_deprel_labels,
                     # eval_pos_labels,
                     # train_dataset.pos_dict["PUNCT"]
                 )
