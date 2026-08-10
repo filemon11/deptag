@@ -929,20 +929,20 @@ class System():
         kth_smallest = kth_smallest[
                 :, -self._k_head_scores]  # type: ignore
 
-        self._unmasked_head_scores = self._head_scores.copy()
-
-        self._head_scores = self._head_scores.copy()
-        self._head_scores[
-            self._head_scores > kth_smallest[:, np.newaxis]] = np.inf
 
         self._contains_root = contains_root
-
         self._head_scores[
             np.arange(
                 (int(self._contains_root)), self._head_scores.shape[0]),
             np.arange(
                 (int(self._contains_root)), self._head_scores.shape[1])
             ] = np.inf
+
+        self._unmasked_head_scores = self._head_scores.copy()
+
+        self._head_scores = self._head_scores.copy()
+        self._head_scores[
+            self._head_scores > kth_smallest[:, np.newaxis]] = np.inf
 
         self._k_sup_inds: np.ndarray = np.argpartition(
             -self._supertag_scores, -self._k_supertag,
@@ -2954,21 +2954,49 @@ def process(
 
     ma = ma[~ignore][:, np.logical_or(
         ~ignore, prefix[0][:ma.shape[-1]])]
+    #
+    #inpt = utils.softmax(ma)
+    #
+    #inpt = np.concatenate((prefix[:, :inpt.shape[-1]], inpt))  #
+    #with np.errstate(divide='ignore'):
+    #    inpt = -np.log10(inpt)       # inpt[:, 1:])
 
-    inpt = utils.softmax(ma)
+    inpt = utils.neg_log10_softmax(ma)
 
-    inpt = np.concatenate((prefix[:, :inpt.shape[-1]], inpt))  #
-    with np.errstate(divide='ignore'):
-        inpt = -np.log10(inpt)       # inpt[:, 1:])
-
-    supertag_scores = utils.softmax(supertag_scores[~ignore])
-    root = np.zeros((1, supertag_scores.shape[-1],))
-    root[0, root_sup_id] = 1
-    supertag_scores = np.concatenate(
-        (root, supertag_scores),
+    # Artificial root can only have itself as head.
+    root_costs = np.full(
+        (1, inpt.shape[-1]),
+        np.inf,
+        dtype=inpt.dtype,
     )
-    with np.errstate(divide='ignore'):
-        supertag_scores = -np.log10(supertag_scores)
+    root_costs[0, 0] = 0.0
+
+    inpt = np.concatenate(
+        (root_costs, inpt),
+        axis=0,
+    )
+
+    # supertag_scores = utils.softmax(supertag_scores[~ignore])
+    # root = np.zeros((1, supertag_scores.shape[-1],))
+    # root[0, root_sup_id] = 1
+    # supertag_scores = np.concatenate(
+    #     (root, supertag_scores),
+    # )
+    # with np.errstate(divide='ignore'):
+    #     supertag_scores = -np.log10(supertag_scores)
+
+    supertag_scores = utils.neg_log10_softmax(supertag_scores[~ignore])
+    root_costs = np.full(
+        (1, supertag_scores.shape[-1]),
+        np.inf,
+        dtype=inpt.dtype,
+    )
+    root_costs[0, root_sup_id] = 0.0
+
+    supertag_scores = np.concatenate(
+        (root_costs, supertag_scores),
+        axis=0,
+    )
 
     system = System(
         inpt, supertag_scores, id2sup_relative,
