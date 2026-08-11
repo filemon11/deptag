@@ -8,6 +8,34 @@ from . import losses, biaffine
 from transformers import AutoModel, BertModel
 
 
+class LayerMix(nn.Module):
+    def __init__(self, num_layers: int):
+        super().__init__()
+        self.weights = nn.Parameter(
+            torch.zeros(num_layers)
+        )
+
+    def forward(
+            self,
+            hidden_states: tuple[torch.Tensor, ...],
+            ) -> torch.Tensor:
+        if len(hidden_states) != len(self.weights) + 1:
+            raise ValueError(
+                f"Expected {len(self.weights) + 1} hidden states "
+                f"(embedding + {len(self.weights)} layers), "
+                f"got {len(hidden_states)}."
+            )
+
+        # omit hidden_states[0], the embedding layer
+        hs = torch.stack(hidden_states[1:], dim=0)
+        weights = torch.softmax(self.weights, dim=0)
+
+        return torch.sum(
+            weights[:, None, None, None] * hs,
+            dim=0,
+        )
+
+
 class ModelForTagging(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -40,19 +68,28 @@ class ModelForTagging(nn.Module):
                     self.num_pos_tags, self.pos_emb_dim, padding_idx=0)
             )
 
-        self.endofword_embedding = bnb.nn.StableEmbedding(2, self.pos_emb_dim)
+        # self.endofword_embedding = bnb.nn.StableEmbedding(
+        #   2, self.pos_emb_dim)
 
         transformer_input_dim = (
             config.hidden_size
-            + self.pos_emb_dim
+            # + self.pos_emb_dim
             + (self.pos_emb_dim if self.use_pos else 0)
         )
 
-        self.pos_layer = config.task_specific_params["pos_layer"]
-        self.supertag_layer = config.task_specific_params["supertag_layer"]
-        self.parse_layer = config.task_specific_params["parse_layer"]
+        # self.pos_layer = config.task_specific_params["pos_layer"]
+        # self.supertag_layer = config.task_specific_params["supertag_layer"]
+        # self.parse_layer = config.task_specific_params["parse_layer"]
+        self.pos_mix = LayerMix(config.num_hidden_layers)
+        self.sup_mix = LayerMix(config.num_hidden_layers)
+        self.arc_mix = LayerMix(config.num_hidden_layers)
+        self.rel_mix = LayerMix(config.num_hidden_layers)
 
-        self.input_projection_parse = nn.Linear(
+        # self.input_projection_parse = nn.Linear(
+        #     transformer_input_dim, config.hidden_size)
+        self.input_projection_arc = nn.Linear(
+            transformer_input_dim, config.hidden_size)
+        self.input_projection_rel = nn.Linear(
             transformer_input_dim, config.hidden_size)
         self.input_projection_sup = nn.Linear(
             transformer_input_dim, config.hidden_size)
@@ -135,39 +172,61 @@ class ModelForTagging(nn.Module):
             output_hidden_states=True,
         )
         # num_layers = len(outputs["hidden_states"])-1
-        token_repr_parse = outputs["hidden_states"][self.parse_layer]
-        token_repr_sup = outputs["hidden_states"][self.supertag_layer]
-        token_repr_pos = outputs["hidden_states"][self.pos_layer]
+        # token_repr_parse = outputs["hidden_states"][self.parse_layer]
+        token_repr_arc = self.arc_mix(outputs["hidden_states"])
+        token_repr_rel = self.rel_mix(outputs["hidden_states"])
+        token_repr_sup = self.sup_mix(outputs["hidden_states"])
+        token_repr_pos = self.pos_mix(outputs["hidden_states"])
         # print(num_layers, round(num_layers*(2/3)), round(num_layers*(1/3)))
 
         if self.use_pos:
-            pos_encodings = self.pos_encoder(pos_ids)
-            token_repr_parse = torch.cat(
-                [token_repr_parse, pos_encodings], dim=-1)
-        else:
-            token_repr_parse = outputs[0]
+            pos_input = torch.where(
+                pos_ids >= 0,
+                pos_ids,
+                0,
+            )
 
-        token_repr_parse = torch.cat(
-            [token_repr_parse, self.endofword_embedding(
-                (pos_ids != 0).long())],
-            dim=-1)
-        token_repr_sup = torch.cat(
-            [token_repr_sup, self.endofword_embedding((pos_ids != 0).long())],
-            dim=-1)
-        token_repr_pos = torch.cat(
-            [token_repr_pos, self.endofword_embedding((pos_ids != 0).long())],
-            dim=-1)
+            pos_encodings = self.pos_encoder(pos_input)
+            # token_repr_parse = torch.cat(
+            #     [token_repr_parse, pos_encodings], dim=-1)
+            token_repr_arc = torch.cat(
+                    [token_repr_arc, pos_encodings], dim=-1)
+            token_repr_rel = torch.cat(
+                    [token_repr_rel, pos_encodings], dim=-1)
+        # else:
+        #     token_repr_parse = outputs[0]
 
-        token_repr_parse = self.input_projection_parse(token_repr_parse)
+        # token_repr_parse = torch.cat(
+        #     [token_repr_parse, self.endofword_embedding(
+        #         (pos_ids != 0).long())],
+        #     dim=-1)
+        # eow = self.endofword_embedding((end_of_word > 0).long())
+
+        # token_repr_arc = torch.cat(
+        #     [token_repr_arc, eow],
+        #     dim=-1)
+        # token_repr_rel = torch.cat(
+        #     [token_repr_rel, eow],
+        #     dim=-1)
+        # token_repr_sup = torch.cat(
+        #     [token_repr_sup, eow],
+        #     dim=-1)
+        # token_repr_pos = torch.cat(
+        #     [token_repr_pos, eow],
+        #     dim=-1)
+
+        # token_repr_parse = self.input_projection_parse(token_repr_parse)
+        token_repr_arc = self.input_projection_arc(token_repr_arc)
+        token_repr_rel = self.input_projection_rel(token_repr_rel)
         token_repr_sup = self.input_projection_sup(token_repr_sup)
         token_repr_pos = self.input_projection_pos(token_repr_pos)
 
-        if self.transformer_layers > 0:
-            padding_mask = attention_mask == 0
-            token_repr_parse = self.transformer(
-                token_repr_parse,
-                src_key_padding_mask=padding_mask
-            )
+        # if self.transformer_layers > 0:
+        #     padding_mask = attention_mask == 0
+        #     token_repr_parse = self.transformer(
+        #         token_repr_parse,
+        #         src_key_padding_mask=padding_mask
+        #     )
 
         tag_logits = None
         if self.projection is not None:
@@ -180,7 +239,8 @@ class ModelForTagging(nn.Module):
         S_arc = None
         S_lab = None
         if self.biaffine is not None:
-            S_arc, S_lab = self.biaffine(token_repr_parse.contiguous())
+            S_arc, S_lab = self.biaffine(
+                token_repr_arc, token_repr_rel)
 
         loss = None
         pos_loss = None

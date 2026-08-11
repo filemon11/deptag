@@ -214,8 +214,7 @@ def generate_config(
         # Relative layer selection:
         # BERT-base: 4, 8, 12
         # XLM-R-large: 8, 16, 24
-        "pos_layer": num_encoder_layers,
-        #  round(num_encoder_layers / 3),
+        "pos_layer": round(num_encoder_layers / 3),
         "supertag_layer": num_encoder_layers,
         # round(2 * num_encoder_layers / 3),
         "parse_layer": num_encoder_layers,

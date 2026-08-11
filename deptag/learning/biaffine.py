@@ -106,21 +106,21 @@ class BiAffineParser(nn.Module):
 
     # @torch.compile()
     def forward(
-            self, h: torch.Tensor, *args, **kwargs
+            self, h_arc: torch.Tensor, h_lab: torch.Tensor, *args, **kwargs
             ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         """Compute the score matrices for the arcs and labels."""
 
         arc_h = None
         arc_d = None
         if self.arc_mlp_h is not None and self.arc_mlp_d is not None:
-            arc_h = self.arc_mlp_h(h).contiguous()
-            arc_d = self.arc_mlp_d(h).contiguous()
+            arc_h = self.arc_mlp_h(h_arc).contiguous()
+            arc_d = self.arc_mlp_d(h_arc).contiguous()
 
         lab_h = None
         lab_d = None
         if self.lab_mlp_h is not None and self.lab_mlp_d is not None:
-            lab_h = self.lab_mlp_h(h).contiguous()
-            lab_d = self.lab_mlp_d(h).contiguous()
+            lab_h = self.lab_mlp_h(h_lab).contiguous()
+            lab_d = self.lab_mlp_d(h_lab).contiguous()
 
         S_arc = None
         if self.arc_biaffine is not None:
