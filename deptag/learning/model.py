@@ -81,7 +81,12 @@ class ModelForTagging(nn.Module):
         self.projection = None
         if self.train_sup:
             self.projection = nn.Sequential(
+                nn.Linear(config.hidden_size, config.hidden_size),
+                nn.GELU(),
+                nn.Dropout(self.dropout_rate),
                 nn.Linear(config.hidden_size, config.num_labels))
+            # self.projection = nn.Sequential(
+            #     nn.Linear(config.hidden_size, config.num_labels))
         self.pos_projection = None
         if config.task_specific_params["train_pos"]:
             self.pos_projection = nn.Sequential(
@@ -124,7 +129,7 @@ class ModelForTagging(nn.Module):
             output_attentions=output_attentions,
             output_hidden_states=True,
         )
-        num_layers = len(outputs["hidden_states"])-1
+        # num_layers = len(outputs["hidden_states"])-1
         token_repr_parse = outputs["hidden_states"][self.parse_layer]
         token_repr_sup = outputs["hidden_states"][self.supertag_layer]
         token_repr_pos = outputs["hidden_states"][self.pos_layer]

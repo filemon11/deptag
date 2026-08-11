@@ -205,7 +205,7 @@ def generate_config(
 
         "pos_emb_dim": 256,
         "num_pos_tags": num_pos_tags + 1,
-        "dropout": 0.0,
+        "dropout": 0.1,
         "use_pos": False,
 
         "n_heads": config.num_attention_heads,
@@ -215,7 +215,8 @@ def generate_config(
         # BERT-base: 4, 8, 12
         # XLM-R-large: 8, 16, 24
         "pos_layer": round(num_encoder_layers / 3),
-        "supertag_layer": round(2 * num_encoder_layers / 3),
+        "supertag_layer": num_encoder_layers,
+        # round(2 * num_encoder_layers / 3),
         "parse_layer": num_encoder_layers,
 
         "train_pos": train_pos,
