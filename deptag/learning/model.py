@@ -89,9 +89,14 @@ class ModelForTagging(nn.Module):
             #     nn.Linear(config.hidden_size, config.num_labels))
         self.pos_projection = None
         if config.task_specific_params["train_pos"]:
+            # self.pos_projection = nn.Sequential(
+            #     nn.Linear(config.hidden_size, self.num_pos_tags)
+            # )
             self.pos_projection = nn.Sequential(
-                nn.Linear(config.hidden_size, self.num_pos_tags)
-            )
+                nn.Linear(config.hidden_size, config.hidden_size),
+                nn.GELU(),
+                nn.Dropout(self.dropout_rate),
+                nn.Linear(config.hidden_size, self.num_pos_tags))
 
         self.biaffine = None
         if (
