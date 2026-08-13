@@ -17,7 +17,7 @@ def reconstruct(
             elif pos_tag == "ADV" and head_pos_tag in predicates:
                 return "advcl"
             elif pos_tag == "NUM" and head_pos_tag in nominals:
-                return "nummod"
+                return "nummxod"
             else:
                 return "acl"
         case _:

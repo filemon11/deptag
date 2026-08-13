@@ -95,63 +95,227 @@ def predict(
             pos_labels = batch['pos_ids'].int().cpu().numpy()
             eval_pos_labels.append(pos_labels)
 
+        # if outputs[5] is not None:
+        #     # [batch, sent_len (head preds), sent_len]
+        #     # outputs[5][:, 1:][batch['heads'][:, 1:] == -1] = float("-inf")
+        #     valid_head = batch['heads'].ne(-1).clone()
+        #     valid_head[:, 0] = True
+        #     arc_logits = outputs[5].masked_fill(
+        #         ~valid_head.unsqueeze(-1),  # [batch, candidate_head, 1]
+        #         float("-inf"),
+        #     )
+        #     # set impossible likelihood to predicted heads that are masked
+
+        #     arc_logits = arc_logits.transpose(-1, -2).float().cpu().numpy()
+        #     # [batch, sent_len, sent_len (head preds)]
+        #     arc_predictions.append(arc_logits)
+        #     max_len = max(max_len, arc_logits.shape[1])
+        #     heads = batch['heads'].int().cpu().numpy()
+        #     eval_heads.append(heads)
+
+        pred_heads = None
+        parse_mask = None
+
         if outputs[5] is not None:
-            # [batch, sent_len (head preds), sent_len]
-            # outputs[5][:, 1:][batch['heads'][:, 1:] == -1] = float("-inf")
-            valid_head = batch['heads'].ne(-1).clone()
-            valid_head[:, 0] = True
+            # batch["heads"]: [B, W]
+            # True for actual words, False for padding.
+            word_mask = batch["heads"].ne(-1)
+
+            # Parser sequence is ROOT + words.
+            parse_mask = torch.cat(
+                [
+                    torch.ones(
+                        (word_mask.shape[0], 1),
+                        dtype=torch.bool,
+                        device=word_mask.device,
+                    ),
+                    word_mask,
+                ],
+                dim=1,
+            )
+            # [B, W + 1]
+
+            # outputs[5]: [B, H, D]
             arc_logits = outputs[5].masked_fill(
-                ~valid_head.unsqueeze(-1),  # [batch, candidate_head, 1]
+                ~parse_mask.unsqueeze(-1),
                 float("-inf"),
             )
-            # set impossible likelihood to predicted heads that are masked
 
-            arc_logits = arc_logits.transpose(-1, -2).float().cpu().numpy()
-            # [batch, sent_len, sent_len (head preds)]
-            arc_predictions.append(arc_logits)
-            max_len = max(max_len, arc_logits.shape[1])
-            heads = batch['heads'].int().cpu().numpy()
-            eval_heads.append(heads)
+            # Compute predicted head once, while scores are still tensors.
+            pred_heads = arc_logits.argmax(dim=1)
+            # [B, D]
+
+            # ROOT and padding are not dependents.
+            dependent_mask = parse_mask.clone()
+            dependent_mask[:, 0] = False
+
+            pred_heads = pred_heads.masked_fill(
+                ~dependent_mask,
+                -1,
+            )
+            # [B, D]
+
+            # Store arc scores for later evaluation.
+            arc_logits_np = (
+                arc_logits
+                .transpose(-1, -2)
+                .float()
+                .cpu()
+                .numpy()
+            )
+            # [B, D, H]
+
+            arc_predictions.append(arc_logits_np)
+
+            max_len = max(
+                max_len,
+                arc_logits_np.shape[1],
+            )
+
+            # Gold heads: prepend ignored ROOT dependent.
+            root_heads = torch.full(
+                (batch["heads"].shape[0], 1),
+                -1,
+                dtype=batch["heads"].dtype,
+                device=batch["heads"].device,
+            )
+
+            gold_heads = torch.cat(
+                [root_heads, batch["heads"]],
+                dim=1,
+            )
+            # [B, D]
+
+            eval_heads.append(
+                gold_heads.int().cpu().numpy()
+            )
+
+        # if outputs[7] is not None:
+        #     # This reports the accuracy on the label predictions for the
+        #     # correct arc
+        #     if deprels_from_pred_head:
+        #         assert not deprels_matrix
+        #         assert outputs[5] is not None, (
+        #             "Cannot use deprels from predicted head in model without"
+        #             " head prediction."
+        #         )
+        #         heads = eval_heads[-1].argmax(-1)
+        #     else:
+        #         heads = batch['heads']
+        #     # from format [B, lab, Sl, S]
+        #     # into format [B, S, Sl, lab]
+        #     if deprels_matrix:
+        #         deprel_predictions.append(
+        #             outputs[7].permute(0, 3, 2, 1).float().cpu().numpy())
+        #     else:
+        #         # heads with index -1 are padding and are treated as
+        #         # index 0 here (to be disregarded later)
+        #         # print(heads[1])
+        #         hds = heads + (heads < 0)
+
+        #         hds = hds.unsqueeze(1).unsqueeze(2)
+        #         # [batch, 1, 1, sent_len]
+
+        #         hds = hds.expand(-1, outputs[7].size(1), -1, -1)
+        #         # [batch, n_labels, 1, sent_len]
+
+        #         deprel_logits = torch.gather(outputs[7], 2, hds).squeeze(2)
+        #         # [batch, n_labels, sent_len]
+        #         max_len = max(max_len, deprel_logits.shape[1])
+
+        #         deprel_logits = deprel_logits.transpose(-1, -2)
+        #         # [batch, sent_len, n_labels]
+
+        #         deprel_predictions.append(deprel_logits.float().cpu().numpy())
 
         if outputs[7] is not None:
-            # This reports the accuracy on the label predictions for the
-            # correct arc
             if deprels_from_pred_head:
                 assert not deprels_matrix
-                assert outputs[5] is not None, (
-                    "Cannot use deprels from predicted head in model without"
-                    " head prediction."
+                assert pred_heads is not None, (
+                    "Cannot use deprels from predicted head "
+                    "without head prediction."
                 )
-                heads = eval_heads[-1].argmax(-1)
+
+                heads_for_deprel = pred_heads
+
             else:
-                heads = batch['heads']
-            # from format [B, lab, Sl, S]
-            # into format [B, S, Sl, lab]
+                # Use gold heads.
+                root_heads = torch.full(
+                    (batch["heads"].shape[0], 1),
+                    -1,
+                    dtype=batch["heads"].dtype,
+                    device=batch["heads"].device,
+                )
+
+                heads_for_deprel = torch.cat(
+                    [root_heads, batch["heads"]],
+                    dim=1,
+                )
+
             if deprels_matrix:
+                # outputs[7]: [B, L, H, D]
+                # -> [B, D, H, L]
                 deprel_predictions.append(
-                    outputs[7].permute(0, 3, 2, 1).float().cpu().numpy())
+                    outputs[7]
+                    .permute(0, 3, 2, 1)
+                    .float()
+                    .cpu()
+                    .numpy()
+                )
+
             else:
-                # heads with index -1 are padding and are treated as
-                # index 0 here (to be disregarded later)
-                # print(heads[1])
-                hds = heads + (heads < 0)
+                # Replace -1 by 0 solely to make gather legal.
+                safe_heads = heads_for_deprel.clamp_min(0)
+                # [B, D]
 
-                hds = hds.unsqueeze(1).unsqueeze(2)
-                # [batch, 1, 1, sent_len]
+                hds = safe_heads[:, None, None, :]
+                # [B, 1, 1, D]
 
-                hds = hds.expand(-1, outputs[7].size(1), -1, -1)
-                # [batch, n_labels, 1, sent_len]
+                hds = hds.expand(
+                    -1,
+                    outputs[7].size(1),
+                    -1,
+                    -1,
+                )
+                # [B, L, 1, D]
 
-                deprel_logits = torch.gather(outputs[7], 2, hds).squeeze(2)
-                # [batch, n_labels, sent_len]
-                max_len = max(max_len, deprel_logits.shape[1])
+                deprel_logits = torch.gather(
+                    outputs[7],
+                    dim=2,
+                    index=hds,
+                ).squeeze(2)
+                # [B, L, D]
 
                 deprel_logits = deprel_logits.transpose(-1, -2)
-                # [batch, sent_len, n_labels]
+                # [B, D, L]
 
-                deprel_predictions.append(deprel_logits.float().cpu().numpy())
-        deprel_labels = batch['deprel_ids'].int().cpu().numpy()
-        eval_deprel_labels.append(deprel_labels)
+                max_len = max(
+                    max_len,
+                    deprel_logits.shape[1],
+                )
+
+                deprel_predictions.append(
+                    deprel_logits.float().cpu().numpy()
+                )
+
+        root_deprel = torch.full(
+            (batch["deprel_ids"].shape[0], 1),
+            -1,
+            dtype=batch["deprel_ids"].dtype,
+            device=batch["deprel_ids"].device,
+        )
+
+        deprel_labels = torch.cat(
+            [root_deprel, batch["deprel_ids"]],
+            dim=1,
+        )
+
+        eval_deprel_labels.append(
+            deprel_labels.int().cpu().numpy()
+        )
+
+        # deprel_labels = batch['deprel_ids'].int().cpu().numpy()
+        # eval_deprel_labels.append(deprel_labels)
 
         if outputs[0] is not None:
             assert isinstance(sup_losses, list)

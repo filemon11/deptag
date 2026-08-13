@@ -2,12 +2,14 @@ import os
 import logging
 import pickle
 import json
+import math
 
 import numpy as np
 import torch
 import transformers
-from bitsandbytes.optim import Adam8bit
+from bitsandbytes.optim import AdamW8bit
 from torch.utils.data import DataLoader
+import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 from torch.amp.grad_scaler import GradScaler
 import tqdm
@@ -205,7 +207,7 @@ def generate_config(
 
         "pos_emb_dim": 256,
         "num_pos_tags": num_pos_tags + 1,
-        "dropout": 0.1,
+        "dropout": 0.2,
         "use_pos": False,
 
         "n_heads": config.num_attention_heads,
@@ -224,7 +226,8 @@ def generate_config(
         "mlp_arc_hidden": 500 if train_arc else None,
 
         "mlp_lab_hidden": (
-            100 if num_deprel_tags is not None else None
+            200 if num_deprel_tags is not None else None
+            # previously 100
         ),
         "mlp_dropout": 0.3,
         "mlp_num_labels": (
@@ -263,28 +266,109 @@ def initialize_model(
 
 
 def initialize_optimizer_and_scheduler(
-        model, dataset_size, lr=5e-5, num_epochs=4,
-        num_warmup_steps=160, grad_acc: int = 1):
-    num_training_steps = dataset_size // grad_acc * num_epochs
-    no_decay = ['bias', 'LayerNorm.weight', 'layer_norm.weight']
+        model, num_batches_per_epoch, num_epochs=4,
+        num_warmup_steps=160, grad_acc: int = 1,
+        warmup_ratio: float = 0.1,
+        encoder_lr: float = 1e-5,
+        head_lr: float = 3e-4,
+        weight_decay: float = 0.01,
+        ):
+    num_update_steps_per_epoch = math.ceil(
+        num_batches_per_epoch / grad_acc
+    )
+
+    num_training_steps = (
+        num_update_steps_per_epoch * num_epochs
+    )
+
+    num_warmup_steps = round(
+        warmup_ratio * num_training_steps
+    )
+
+    # no_decay = ['bias', 'LayerNorm.weight', 'layer_norm.weight']
+
+    no_decay_param_ids = set()
+
+    for module in model.modules():
+        if isinstance(module, nn.LayerNorm):
+            for p in module.parameters(recurse=False):
+                no_decay_param_ids.add(id(p))
+
+    for name, p in model.named_parameters():
+        if name.endswith(".bias"):
+            no_decay_param_ids.add(id(p))
+
+    encoder_param_ids = {
+        id(p) for p in model.encoder.parameters()
+        }
+
     grouped_parameters = [
+        # Newly initialized heads: with decay
         {
             "params": [
-                p for n, p in model.named_parameters() if "bert" not in n],
-            "weight_decay": 0.0,
-            "lr": lr * 50, "betas": (0.9, 0.9),
+                p
+                for n, p in model.named_parameters()
+                if (
+                    id(p) not in encoder_param_ids
+                    and not id(p) in no_decay_param_ids
+                    and "mix.weights" not in n
+                    and p.requires_grad
+                )
+            ],
+            "lr": head_lr,
+            "weight_decay": weight_decay,
+            "betas": (0.9, 0.999),
         },
+
+        # Newly initialized heads: no decay
         {
-            "params": [p for n, p in model.named_parameters() if
-                       "bert" in n and any(nd in n for nd in no_decay)],
+            "params": [
+                p
+                for n, p in model.named_parameters()
+                if (
+                    id(p) not in encoder_param_ids
+                    and (
+                        id(p) in no_decay_param_ids
+                        or "mix.weights" in n
+                    )
+                    and p.requires_grad
+                )
+            ],
+            "lr": head_lr,
             "weight_decay": 0.0,
-            "lr": lr, "betas": (0.9, 0.999),
+            "betas": (0.9, 0.999),
         },
+
+        # Pretrained encoder: with decay
         {
-            "params": [p for n, p in model.named_parameters() if
-                       "bert" in n and not any(nd in n for nd in no_decay)],
-            "weight_decay": 0.1,
-            "lr": lr, "betas": (0.9, 0.999),
+            "params": [
+                p
+                for n, p in model.named_parameters()
+                if (
+                    id(p) in encoder_param_ids
+                    and not id(p) in no_decay_param_ids
+                    and p.requires_grad
+                )
+            ],
+            "lr": encoder_lr,
+            "weight_decay": weight_decay,
+            "betas": (0.9, 0.999),
+        },
+
+        # Pretrained encoder: no decay
+        {
+            "params": [
+                p
+                for n, p in model.named_parameters()
+                if (
+                    id(p) in encoder_param_ids
+                    and id(p) in no_decay_param_ids
+                    and p.requires_grad
+                )
+            ],
+            "lr": encoder_lr,
+            "weight_decay": 0.0,
+            "betas": (0.9, 0.999),
         },
     ]
     # Freeze all layers
@@ -297,8 +381,8 @@ def initialize_optimizer_and_scheduler(
     #         except ValueError:
     #             param.requires_grad = False
 
-    optimizer = Adam8bit(
-        grouped_parameters, lr=lr
+    optimizer = AdamW8bit(
+        grouped_parameters,
     )
     scheduler = transformers.get_linear_schedule_with_warmup(
         optimizer=optimizer,
@@ -310,7 +394,9 @@ def initialize_optimizer_and_scheduler(
 
 
 def register_run_metrics(
-        writer, run_name, lr, epochs, tag_accuracy: float | None = None,
+        writer, run_name,
+        # lr,
+        epochs, tag_accuracy: float | None = None,
         pos_accuracy: None | float = None, arc_accuracy: None | float = None,
         deprel_accuracy: None | float = None):
     add_dict = {}
@@ -324,7 +410,9 @@ def register_run_metrics(
         add_dict['deprel_accuracy'] = deprel_accuracy
 
     writer.add_hparams(
-        {'run_name': run_name, 'lr': lr, 'epochs': epochs},
+        {
+            'run_name': run_name,  # 'lr': lr,
+            'epochs': epochs},
         add_dict)
 
 
@@ -398,6 +486,49 @@ def softmax(x):
     return e_x / e_x.sum(axis=-1)[..., np.newaxis]
 
 
+def select_deprel_logits(
+        deprel_predictions: np.ndarray,
+        heads: np.ndarray,
+        ) -> np.ndarray:
+    """Select dependency-relation logits for chosen heads.
+
+    deprel_predictions:
+        [B, D, H, L]
+
+    heads:
+        [B, D], with -1 for ROOT/padding.
+
+    Returns:
+        [B, D, L]
+    """
+    safe_heads = np.maximum(heads, 0).astype(np.intp, copy=False)
+    # [B, D]
+
+    head_indices = safe_heads[..., None, None]
+    # [B, D, 1, 1]
+
+    # Explicitly broadcast across the label dimension.
+    head_indices = np.broadcast_to(
+        head_indices,
+        (
+            *safe_heads.shape,
+            1,
+            deprel_predictions.shape[-1],
+        ),
+    )
+    # [B, D, 1, L]
+
+    selected = np.take_along_axis(
+        deprel_predictions,
+        head_indices,
+        axis=2,
+    )
+    # [B, D, 1, L]
+
+    return selected.squeeze(2)
+    # [B, D, L]
+
+
 def train_command(args: settings.Settings):
     data_path = pathlib.Path(args.file.data_folder)
     prefix: str = args.file.conllu_file
@@ -467,14 +598,16 @@ def train_command(args: settings.Settings):
     model.to(device)
 
     run_name = (
-        args.file.conllu_file + "-" + args.tagging.model_name + "-" + str(
-            args.tagging.lr) + "-" + str(args.tagging.epochs))
+        args.file.conllu_file + "-" + args.tagging.model_name + "-"
+        # + str(args.tagging.lr) + "-"
+        + str(args.tagging.epochs))
 
     train_set_size = len(train_dataloader)
     optimizer, scheduler, num_training_steps = (
         initialize_optimizer_and_scheduler(
-            model, train_set_size, args.tagging.lr, args.tagging.epochs,
-            args.tagging.num_warmup_steps, args.tagging.grad_acc
+            model, train_set_size, args.tagging.epochs,
+            args.tagging.num_warmup_steps, args.tagging.grad_acc,
+            # args.tagging.encoder_lr, args.tagging.head_lr
         )
     )
 
@@ -662,24 +795,56 @@ def train_command(args: settings.Settings):
                         'DeprelLoss/dev', dev_deprel_loss, n_iter)
 
             deprel_predictions_ = deprel_predictions
+            # if (
+            #         deprel_predictions is not None
+            #         and eval_deprel_labels is not None):
+            #     assert eval_arc_labels is not None
+            #     hds = eval_arc_labels + (eval_arc_labels < 0)
+            #     # [B, S]
+            #     hds = hds[..., np.newaxis, np.newaxis].repeat(
+            #         deprel_predictions.shape[-1], axis=-1)
+            #     # [B, S, 1, N]
+
+            #     # deprel_predictions, [B, S, Slab, N]
+
+            #     deprel_predictions_ = np.take_along_axis(
+            #         deprel_predictions, hds, axis=2)
+            #     # [B, S, 1, N]
+            #     deprel_predictions_ = np.squeeze(
+            #         deprel_predictions_, axis=2)
+            #     # [B, S, N]
             if (
                     deprel_predictions is not None
-                    and eval_deprel_labels is not None):
+                    and eval_deprel_labels is not None
+                    ):
                 assert eval_arc_labels is not None
-                hds = eval_arc_labels + (eval_arc_labels < 0)
-                # [B, S]
-                hds = hds[..., np.newaxis, np.newaxis].repeat(
-                    deprel_predictions.shape[-1], axis=-1)
-                # [B, S, 1, N]
 
-                # deprel_predictions, [B, S, Slab, N]
+                # eval_arc_labels: [B, D]
+                # Values:
+                #   -1 for ROOT/padding
+                #    0 for ROOT as head
+                #   >0 for word heads
+                #
+                # Replace -1 with 0 solely to obtain a legal gather index.
+                safe_heads = np.maximum(eval_arc_labels, 0)
+                # [B, D]
+
+                # deprel_predictions: [B, D, H, L]
+                head_indices = safe_heads[..., np.newaxis, np.newaxis]
+                # [B, D, 1, 1]
 
                 deprel_predictions_ = np.take_along_axis(
-                    deprel_predictions, hds, axis=2)
-                # [B, S, 1, N]
+                    deprel_predictions,
+                    head_indices,
+                    axis=2,
+                )
+                # [B, D, 1, L]
+
                 deprel_predictions_ = np.squeeze(
-                    deprel_predictions_, axis=2)
-                # [B, S, N]
+                    deprel_predictions_,
+                    axis=2,
+                )
+                # [B, D, L]
 
             dev_sup_acc, dev_pos_acc, dev_arc_acc, dev_deprel_acc = (
                 get_accuracies(
@@ -729,58 +894,60 @@ def train_command(args: settings.Settings):
             match args.tagging.eval_metric:
                 case "cacc":
                     eval_metric = combined_acc
+
                 case "a*-las" | "a*-uas":
-                    # TODO: test the deprel reconstructor
-                    # by giving the chart parser gold arc labels
-                    # and gold supertag labels
                     assert arc_predictions is not None
                     assert eval_arc_labels is not None
                     assert predictions is not None
                     assert pos_predictions is not None
+
                     if epo > -1:
                         head_preds_astar, deprel_preds_astar = parsing.chart(
-                            arc_predictions, eval_arc_labels,
-                            predictions, id2sup, id2pos,
+                            arc_predictions,
+                            eval_arc_labels,
+                            predictions,
+                            id2sup,
+                            id2pos,
                             train_dataset.deprel_dict,
                             pos_predictions.argmax(-1),
-                            max_l, max_r,
+                            max_l,
+                            max_r,
                             root_sup_id=sup2id["*+root"],
-                            k_supertag=5, k_head_scores=5
+                            k_supertag=5,
+                            k_head_scores=5,
                         )
-                        # TODO: need to limit size of sentences?
+
                         assert eval_deprel_labels is not None
 
                         if args.tagging.eval_metric == "a*-las":
                             assert deprel_predictions is not None
-                            # deprel_predictions, [B, S, Slab, N]
-                            hds = head_preds_astar + (head_preds_astar < 0)
-                            # [B, S]
-                            hds = hds[..., np.newaxis, np.newaxis].repeat(
-                                deprel_predictions.shape[-1], axis=-1)
-                            # [B, S, 1, N]
-                            print(deprel_predictions.shape, hds.shape)
 
-                            deprel_predictions = np.take_along_axis(
-                                deprel_predictions, hds, axis=2)
-                            # [B, S, 1, N]
-                            deprel_predictions = np.squeeze(
-                                deprel_predictions, axis=2)
-                            # [B, S, N]
-                            deprel_predictions = deprel_predictions.argmax(-1)
-                            # [B, S]
+                            # deprel_predictions: [B, D, H, L]
+                            # head_preds_astar:   [B, D]
+                            deprel_logits_astar = select_deprel_logits(
+                                deprel_predictions,
+                                head_preds_astar,
+                            )
+                            # [B, D, L]
+
+                            deprel_predictions_astar = (
+                                deprel_logits_astar.argmax(-1)
+                            )
+                            # [B, D]
+
                             eval_metric = parsing.las(
-                                head_preds_astar, deprel_predictions,
-                                # deprel_preds_astar,
-                                eval_arc_labels, eval_deprel_labels,
-                                # eval_pos_labels,
-                                # train_dataset.pos_dict["PUNCT"]
+                                head_preds_astar,
+                                deprel_predictions_astar,
+                                eval_arc_labels,
+                                eval_deprel_labels,
                             )
-                        elif args.tagging.eval_metric == "a*-uas":
+
+                        else:  # a*-uas
                             eval_metric = parsing.uas(
-                                head_preds_astar, eval_arc_labels,
-                                # eval_pos_labels,
-                                # train_dataset.pos_dict["PUNCT"]
+                                head_preds_astar,
+                                eval_arc_labels,
                             )
+
                     else:
                         eval_metric = 0
                         tol = 99999
@@ -790,50 +957,152 @@ def train_command(args: settings.Settings):
                     assert eval_arc_labels is not None
 
                     mst = parsing.mst(
-                        arc_predictions, eval_arc_labels)
+                        arc_predictions,
+                        eval_arc_labels,
+                    )
+                    # mst: [B, D]
+
                     if args.tagging.eval_metric == "mst-las":
                         assert deprel_predictions is not None
                         assert eval_deprel_labels is not None
 
-                        hds = mst + (mst < 0)
-                        # [B, S]
-                        hds = hds[..., np.newaxis, np.newaxis].repeat(
-                            deprel_predictions.shape[-1], axis=-1)
-                        # [B, S, 1, N]
+                        # deprel_predictions: [B, D, H, L]
+                        deprel_logits_mst = select_deprel_logits(
+                            deprel_predictions,
+                            mst,
+                        )
+                        # [B, D, L]
 
-                        # deprel_predictions, [B, S, Slab, N]
-                        deprel_predictions_mst = np.take_along_axis(
-                            deprel_predictions, hds, axis=2)
-                        # [B, S, 1, N]
-                        deprel_predictions_mst = np.squeeze(
-                            deprel_predictions_mst, axis=2)
-                        # [B, S, N]
-                        deprel_predictions_mst = deprel_predictions_mst.argmax(-1)
-                        # [B, S]
+                        deprel_predictions_mst = (
+                            deprel_logits_mst.argmax(-1)
+                        )
+                        # [B, D]
 
-                        # print("PUNCT:", train_dataset.pos_dict["PUNCT"])
                         eval_metric = parsing.las(
-                            mst, deprel_predictions_mst,
-                            eval_arc_labels, eval_deprel_labels,
-                            # eval_pos_labels, train_dataset.pos_dict["PUNCT"]
+                            mst,
+                            deprel_predictions_mst,
+                            eval_arc_labels,
+                            eval_deprel_labels,
                         )
-                        # TODO: implement punctuation ignore option
-                    elif args.tagging.eval_metric == "mst-uas":
+
+                    else:  # mst-uas
                         eval_metric = parsing.uas(
-                            mst, eval_arc_labels,
-                            # eval_pos_labels, train_dataset.pos_dict["PUNCT"]
+                            mst,
+                            eval_arc_labels,
                         )
 
-                    # run mst, get heads
-                    # (select deprels using mst heads)
-                    # compute las/uas
-
-                    # TODO: add las option for predicted deprel matrix or not
-                    # then, select from matrix using predictions there
                 case _:
                     raise Exception(
-                        f"args.tagging.eval_metric '{args.tagging.eval_metric}"
-                        "' unknown")
+                        f"args.tagging.eval_metric "
+                        f"'{args.tagging.eval_metric}' unknown"
+                    )
+            # match args.tagging.eval_metric:
+            #     case "cacc":
+            #         eval_metric = combined_acc
+            #     case "a*-las" | "a*-uas":
+            #         # TODO: test the deprel reconstructor
+            #         # by giving the chart parser gold arc labels
+            #         # and gold supertag labels
+            #         assert arc_predictions is not None
+            #         assert eval_arc_labels is not None
+            #         assert predictions is not None
+            #         assert pos_predictions is not None
+            #         if epo > -1:
+            #             head_preds_astar, deprel_preds_astar = parsing.chart(
+            #                 arc_predictions, eval_arc_labels,
+            #                 predictions, id2sup, id2pos,
+            #                 train_dataset.deprel_dict,
+            #                 pos_predictions.argmax(-1),
+            #                 max_l, max_r,
+            #                 root_sup_id=sup2id["*+root"],
+            #                 k_supertag=5, k_head_scores=5
+            #             )
+            #             assert eval_deprel_labels is not None
+
+            #             if args.tagging.eval_metric == "a*-las":
+            #                 assert deprel_predictions is not None
+            #                 # deprel_predictions, [B, S, Slab, N]
+            #                 hds = head_preds_astar + (head_preds_astar < 0)
+            #                 # [B, S]
+            #                 hds = hds[..., np.newaxis, np.newaxis].repeat(
+            #                     deprel_predictions.shape[-1], axis=-1)
+            #                 # [B, S, 1, N]
+            #                 print(deprel_predictions.shape, hds.shape)
+
+            #                 deprel_predictions = np.take_along_axis(
+            #                     deprel_predictions, hds, axis=2)
+            #                 # [B, S, 1, N]
+            #                 deprel_predictions = np.squeeze(
+            #                     deprel_predictions, axis=2)
+            #                 # [B, S, N]
+            #                 deprel_predictions = deprel_predictions.argmax(-1)
+            #                 # [B, S]
+            #                 eval_metric = parsing.las(
+            #                     head_preds_astar, deprel_predictions,
+            #                     # deprel_preds_astar,
+            #                     eval_arc_labels, eval_deprel_labels,
+            #                     # eval_pos_labels,
+            #                     # train_dataset.pos_dict["PUNCT"]
+            #                 )
+            #             elif args.tagging.eval_metric == "a*-uas":
+            #                 eval_metric = parsing.uas(
+            #                     head_preds_astar, eval_arc_labels,
+            #                     # eval_pos_labels,
+            #                     # train_dataset.pos_dict["PUNCT"]
+            #                 )
+            #         else:
+            #             eval_metric = 0
+            #             tol = 99999
+
+            #     case "mst-las" | "mst-uas":
+            #         assert arc_predictions is not None
+            #         assert eval_arc_labels is not None
+
+            #         mst = parsing.mst(
+            #             arc_predictions, eval_arc_labels)
+            #         if args.tagging.eval_metric == "mst-las":
+            #             assert deprel_predictions is not None
+            #             assert eval_deprel_labels is not None
+
+            #             hds = mst + (mst < 0)
+            #             # [B, S]
+            #             hds = hds[..., np.newaxis, np.newaxis].repeat(
+            #                 deprel_predictions.shape[-1], axis=-1)
+            #             # [B, S, 1, N]
+
+            #             # deprel_predictions, [B, S, Slab, N]
+            #             deprel_predictions_mst = np.take_along_axis(
+            #                 deprel_predictions, hds, axis=2)
+            #             # [B, S, 1, N]
+            #             deprel_predictions_mst = np.squeeze(
+            #                 deprel_predictions_mst, axis=2)
+            #             # [B, S, N]
+            #             deprel_predictions_mst = deprel_predictions_mst.argmax(-1)
+            #             # [B, S]
+
+            #             # print("PUNCT:", train_dataset.pos_dict["PUNCT"])
+            #             eval_metric = parsing.las(
+            #                 mst, deprel_predictions_mst,
+            #                 eval_arc_labels, eval_deprel_labels,
+            #                 # eval_pos_labels, train_dataset.pos_dict["PUNCT"]
+            #             )
+            #             # TODO: implement punctuation ignore option
+            #         elif args.tagging.eval_metric == "mst-uas":
+            #             eval_metric = parsing.uas(
+            #                 mst, eval_arc_labels,
+            #                 # eval_pos_labels, train_dataset.pos_dict["PUNCT"]
+            #             )
+
+            #         # run mst, get heads
+            #         # (select deprels using mst heads)
+            #         # compute las/uas
+
+            #         # TODO: add las option for predicted deprel matrix or not
+            #         # then, select from matrix using predictions there
+            #     case _:
+            #         raise Exception(
+            #             f"args.tagging.eval_metric '{args.tagging.eval_metric}"
+            #             "' unknown")
                 # TODO: for arc scoring also supervise the root token.
                 # Achieve this by including the BOS token as the
                 # artificial root token
@@ -974,7 +1243,7 @@ def _finish_training(
     )
 
     register_run_metrics(
-        writer, run_name, args.lr,
+        writer, run_name,  # args.lr,
         args.epochs, sup_acc, pos_acc, arc_acc, deprel_acc)
 
 
@@ -1052,25 +1321,38 @@ def evaluate_command(args: settings.Settings, k: int = 1):
             deprels_matrix=True)
         )
 
+    # deprel_predictions_ = deprel_predictions
+    # if (
+    #         deprel_predictions is not None
+    #         and eval_deprel_labels is not None):
+    #     assert eval_arc_labels is not None
+    #     hds = eval_arc_labels + (eval_arc_labels < 0)
+    #     # [B, S]
+    #     hds = hds[..., np.newaxis, np.newaxis].repeat(
+    #         deprel_predictions.shape[-1], axis=-1)
+    #     # [B, S, 1, N]
+
+    #     # deprel_predictions, [B, S, Slab, N]
+
+    #     deprel_predictions_ = np.take_along_axis(
+    #         deprel_predictions, hds, axis=2)
+    #     # [B, S, 1, N]
+    #     deprel_predictions_ = np.squeeze(
+    #         deprel_predictions_, axis=2)
+    #     # [B, S, N]
     deprel_predictions_ = deprel_predictions
+
     if (
             deprel_predictions is not None
-            and eval_deprel_labels is not None):
+            and eval_deprel_labels is not None
+            ):
         assert eval_arc_labels is not None
-        hds = eval_arc_labels + (eval_arc_labels < 0)
-        # [B, S]
-        hds = hds[..., np.newaxis, np.newaxis].repeat(
-            deprel_predictions.shape[-1], axis=-1)
-        # [B, S, 1, N]
 
-        # deprel_predictions, [B, S, Slab, N]
-
-        deprel_predictions_ = np.take_along_axis(
-            deprel_predictions, hds, axis=2)
-        # [B, S, 1, N]
-        deprel_predictions_ = np.squeeze(
-            deprel_predictions_, axis=2)
-        # [B, S, N]
+        deprel_predictions_ = select_deprel_logits(
+            deprel_predictions,
+            eval_arc_labels,
+        )
+        # [B, D, L]
     dev_sup_accs, dev_pos_accs, dev_arc_accs, dev_deprel_accs = (
         get_accuracies(
             writer, 0, args.tagging.use_tensorboard,
@@ -1116,54 +1398,56 @@ def evaluate_command(args: settings.Settings, k: int = 1):
     match args.tagging.eval_metric:
         case "cacc":
             pass  # TODO: maybe compute this...
+
         case "a*-las" | "a*-uas":
             assert arc_predictions is not None
             assert eval_arc_labels is not None
             assert predictions is not None
             assert pos_predictions is not None
+
             head_preds_astar, deprel_preds_astar = parsing.chart(
-                arc_predictions, eval_arc_labels,
-                predictions, id2sup, id2pos,
+                arc_predictions,
+                eval_arc_labels,
+                predictions,
+                id2sup,
+                id2pos,
                 eval_dataset.deprel_dict,
                 pos_predictions.argmax(-1),
-                max_l, max_r,
+                max_l,
+                max_r,
                 root_sup_id=sup2id["*+root"],
-                k_supertag=20, k_head_scores=20
+                k_supertag=20,
+                k_head_scores=20,
             )
-            # TODO: need to limit size of sentences?
 
             if args.tagging.eval_metric == "a*-las":
                 assert deprel_predictions is not None
+                assert eval_deprel_labels is not None
 
-                hds = head_preds_astar + (head_preds_astar < 0)
-                # [B, S]
-                hds = hds[..., np.newaxis, np.newaxis].repeat(
-                    deprel_predictions.shape[-1], axis=-1)
-                # [B, S, 1, N]
+                # deprel_predictions: [B, D, H, L]
+                # head_preds_astar:   [B, D]
+                deprel_logits_astar = select_deprel_logits(
+                    deprel_predictions,
+                    head_preds_astar,
+                )
+                # [B, D, L]
 
-                # deprel_predictions, [B, S, Slab, N]
+                deprel_predictions_astar = (
+                    deprel_logits_astar.argmax(-1)
+                )
+                # [B, D]
 
-                deprel_predictions = np.take_along_axis(
-                    deprel_predictions, hds, axis=2)
-                # [B, S, 1, N]
-                deprel_predictions = np.squeeze(
-                    deprel_predictions, axis=2)
-                # [B, S, N]
-                deprel_predictions = deprel_predictions.argmax(-1)
-                # [B, S]
                 eval_metric = parsing.las(
-                    head_preds_astar, deprel_predictions,
-                    # deprel_preds_astar,
+                    head_preds_astar,
+                    deprel_predictions_astar,
                     eval_arc_labels,
                     eval_deprel_labels,
-                    # eval_pos_labels,
-                    # train_dataset.pos_dict["PUNCT"]
                 )
-            elif args.tagging.eval_metric == "a*-uas":
+
+            else:  # a*-uas
                 eval_metric = parsing.uas(
-                    head_preds_astar, eval_arc_labels,
-                    # eval_pos_labels,
-                    # train_dataset.pos_dict["PUNCT"]
+                    head_preds_astar,
+                    eval_arc_labels,
                 )
 
         case "mst-las" | "mst-uas":
@@ -1171,51 +1455,148 @@ def evaluate_command(args: settings.Settings, k: int = 1):
             assert eval_arc_labels is not None
 
             mst = parsing.mst(
-                arc_predictions, eval_arc_labels)
+                arc_predictions,
+                eval_arc_labels,
+            )
+            # [B, D]
+
             if args.tagging.eval_metric == "mst-las":
                 assert deprel_predictions is not None
                 assert eval_deprel_labels is not None
 
-                hds = mst + (mst < 0)
-                # [B, S]
-                hds = hds[..., np.newaxis, np.newaxis].repeat(
-                    deprel_predictions.shape[-1], axis=-1)
-                # [B, S, 1, N]
+                # Select relation logits corresponding to the MST heads.
+                deprel_logits_mst = select_deprel_logits(
+                    deprel_predictions,
+                    mst,
+                )
+                # [B, D, L]
 
-                # deprel_predictions, [B, S, Slab, N]
+                deprel_predictions_mst = (
+                    deprel_logits_mst.argmax(-1)
+                )
+                # [B, D]
 
-                deprel_predictions_mst = np.take_along_axis(
-                    deprel_predictions, hds, axis=2)
-                # [B, S, 1, N]
-                deprel_predictions_mst = np.squeeze(
-                    deprel_predictions_mst, axis=2)
-                # [B, S, N]
-                deprel_predictions_mst = deprel_predictions_mst.argmax(-1)
-                # [B, S]
-
-                # print("PUNCT:", eval_dataset.pos_dict["PUNCT"])
                 eval_metric = parsing.las(
-                    mst, deprel_predictions_mst,
-                    eval_arc_labels, eval_deprel_labels,
-                    # eval_pos_labels, eval_dataset.pos_dict["PUNCT"]
+                    mst,
+                    deprel_predictions_mst,
+                    eval_arc_labels,
+                    eval_deprel_labels,
                 )
-                # TODO: implement punctuation ignore option
-            if args.tagging.eval_metric == "mst-uas":
+
+            else:  # mst-uas
                 eval_metric = parsing.uas(
-                    mst, eval_arc_labels,
-                    # eval_pos_labels, eval_dataset.pos_dict["PUNCT"]
+                    mst,
+                    eval_arc_labels,
                 )
 
-            # run mst, get heads
-            # (select deprels using mst heads)
-            # compute las/uas
-
-            # TODO: add las option for predicted deprel matrix or not
-            # then, select from matrix using predictions there
         case _:
             raise Exception(
-                f"args.tagging.eval_metric '{args.tagging.eval_metric}"
-                "' unknown")
+                f"args.tagging.eval_metric "
+                f"'{args.tagging.eval_metric}' unknown"
+            )
+    # match args.tagging.eval_metric:
+    #     case "cacc":
+    #         pass  # TODO: maybe compute this...
+    #     case "a*-las" | "a*-uas":
+    #         assert arc_predictions is not None
+    #         assert eval_arc_labels is not None
+    #         assert predictions is not None
+    #         assert pos_predictions is not None
+    #         head_preds_astar, deprel_preds_astar = parsing.chart(
+    #             arc_predictions, eval_arc_labels,
+    #             predictions, id2sup, id2pos,
+    #             eval_dataset.deprel_dict,
+    #             pos_predictions.argmax(-1),
+    #             max_l, max_r,
+    #             root_sup_id=sup2id["*+root"],
+    #             k_supertag=20, k_head_scores=20
+    #         )
+    #         # TODO: need to limit size of sentences?
+
+    #         if args.tagging.eval_metric == "a*-las":
+    #             assert deprel_predictions is not None
+
+    #             hds = head_preds_astar + (head_preds_astar < 0)
+    #             # [B, S]
+    #             hds = hds[..., np.newaxis, np.newaxis].repeat(
+    #                 deprel_predictions.shape[-1], axis=-1)
+    #             # [B, S, 1, N]
+
+    #             # deprel_predictions, [B, S, Slab, N]
+
+    #             deprel_predictions = np.take_along_axis(
+    #                 deprel_predictions, hds, axis=2)
+    #             # [B, S, 1, N]
+    #             deprel_predictions = np.squeeze(
+    #                 deprel_predictions, axis=2)
+    #             # [B, S, N]
+    #             deprel_predictions = deprel_predictions.argmax(-1)
+    #             # [B, S]
+    #             eval_metric = parsing.las(
+    #                 head_preds_astar, deprel_predictions,
+    #                 # deprel_preds_astar,
+    #                 eval_arc_labels,
+    #                 eval_deprel_labels,
+    #                 # eval_pos_labels,
+    #                 # train_dataset.pos_dict["PUNCT"]
+    #             )
+    #         elif args.tagging.eval_metric == "a*-uas":
+    #             eval_metric = parsing.uas(
+    #                 head_preds_astar, eval_arc_labels,
+    #                 # eval_pos_labels,
+    #                 # train_dataset.pos_dict["PUNCT"]
+    #             )
+
+    #     case "mst-las" | "mst-uas":
+    #         assert arc_predictions is not None
+    #         assert eval_arc_labels is not None
+
+    #         mst = parsing.mst(
+    #             arc_predictions, eval_arc_labels)
+    #         if args.tagging.eval_metric == "mst-las":
+    #             assert deprel_predictions is not None
+    #             assert eval_deprel_labels is not None
+
+    #             hds = mst + (mst < 0)
+    #             # [B, S]
+    #             hds = hds[..., np.newaxis, np.newaxis].repeat(
+    #                 deprel_predictions.shape[-1], axis=-1)
+    #             # [B, S, 1, N]
+
+    #             # deprel_predictions, [B, S, Slab, N]
+
+    #             deprel_predictions_mst = np.take_along_axis(
+    #                 deprel_predictions, hds, axis=2)
+    #             # [B, S, 1, N]
+    #             deprel_predictions_mst = np.squeeze(
+    #                 deprel_predictions_mst, axis=2)
+    #             # [B, S, N]
+    #             deprel_predictions_mst = deprel_predictions_mst.argmax(-1)
+    #             # [B, S]
+
+    #             # print("PUNCT:", eval_dataset.pos_dict["PUNCT"])
+    #             eval_metric = parsing.las(
+    #                 mst, deprel_predictions_mst,
+    #                 eval_arc_labels, eval_deprel_labels,
+    #                 # eval_pos_labels, eval_dataset.pos_dict["PUNCT"]
+    #             )
+    #             # TODO: implement punctuation ignore option
+    #         if args.tagging.eval_metric == "mst-uas":
+    #             eval_metric = parsing.uas(
+    #                 mst, eval_arc_labels,
+    #                 # eval_pos_labels, eval_dataset.pos_dict["PUNCT"]
+    #             )
+
+    #         # run mst, get heads
+    #         # (select deprels using mst heads)
+    #         # compute las/uas
+
+    #         # TODO: add las option for predicted deprel matrix or not
+    #         # then, select from matrix using predictions there
+    #     case _:
+    #         raise Exception(
+    #             f"args.tagging.eval_metric '{args.tagging.eval_metric}"
+    #             "' unknown")
     print(
         f"eval metric {args.tagging.eval_metric}:", eval_metric)
 

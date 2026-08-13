@@ -4,15 +4,11 @@ import torch.nn.functional as F
 
 # @torch.compile()  # (backend="aot_eager")
 def calc_loss_helper(
-        logits: torch.Tensor, labels: torch.Tensor, attention_mask,
+        logits: torch.Tensor, labels: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
         printinfo: bool = False):
     # shape: (batch_size, seq_len, num_tags) -> (batch_size, num_tags, seq_len)
     logits = torch.movedim(logits, -1, 1)
-
-    # # Only keep active parts of the loss
-    # active_labels = torch.where(
-    #     attention_mask, labels, -1
-    # )
 
     loss = F.cross_entropy(
         logits, labels, ignore_index=-1, reduction="mean")
@@ -24,10 +20,6 @@ def calc_loss_helper(
 
         logits_wo_ignore_mask = (
             logits_wo_ignore.argmax(-1) == labels_wo_ignore)
-
-        # loss_wo_ignore = F.cross_entropy(
-        #     logits_wo_ignore, labels_wo_ignore, reduce="mean")
-        # print(loss, loss_wo_ignore)
 
         logits_correct = logits_wo_ignore[logits_wo_ignore_mask]
         labels_correct = labels_wo_ignore[logits_wo_ignore_mask]

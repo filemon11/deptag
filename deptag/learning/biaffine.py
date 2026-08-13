@@ -133,127 +133,58 @@ class BiAffineParser(nn.Module):
         return S_arc, S_lab
 
     # @torch.compile()
+    # def arc_loss(
+    #         self, S_arc: torch.Tensor, heads: torch.Tensor,
+    #         attention_mask: torch.Tensor,
+    #         printinfo: bool = False):
+    #     """Compute the loss for the arc predictions."""
+    #     valid_head = torch.cat(
+    #         (
+    #             torch.ones_like(heads[:, :1], dtype=torch.bool),
+    #             heads[:, 1:].ne(-1),
+    #         ),
+    #         dim=1,
+    #     )
+
+    #     masked_scores = S_arc.contiguous().masked_fill(
+    #         ~valid_head.unsqueeze(-1),
+    #         float("-inf"),
+    #     )
+
+    #     return F.cross_entropy(
+    #         masked_scores,
+    #         heads.long(),
+    #         ignore_index=-1,
+    #         reduction="mean",
+    #     )
+
     def arc_loss(
-            self, S_arc: torch.Tensor, heads: torch.Tensor,
-            attention_mask: torch.Tensor,
-            printinfo: bool = False):
-        """Compute the loss for the arc predictions."""
-        # print(S_arc.isnan().any())
-        # print(S_arc.isinf().any())
-        batch_size, num_heads, num_dependents = S_arc.shape
-        # S_arc
-        # [batch, sent_len (head preds), sent_len]
+            self,
+            S_arc: torch.Tensor,
+            heads: torch.Tensor,
+            head_mask: torch.Tensor,
+            printinfo: bool = False,
+            ):
+        """Compute arc loss.
 
-        # S_arc[:, 1:][heads[:, 1:] == -1] = float("-inf")
+        S_arc:
+            [B, H, D], where S_arc[b, h, d] is the score
+            of h being the head of d.
 
-        # Token positions that may be selected as heads.
-        # Valid candidate heads: all real tokens plus artificial ROOT.
-        # valid_dependent = heads.ne(-1)
-        # valid_head = heads.ne(-1).clone()
-        # valid_head[:, 0] = True
+        heads:
+            [B, D], containing gold head indices.
+            The artificial root and padding positions contain -1.
 
-        # # valid_targets = heads[valid_dependent]
-        # # if not torch.all((valid_targets >= 0) & (valid_targets < num_heads)):
-        # #     raise ValueError(
-        # #         f"Gold head outside [0, {num_heads - 1}]: "
-        # #         f"{valid_targets[(
-        # #             valid_targets < 0) | (valid_targets >= num_heads)]}"
-        # #     )
+        head_mask:
+            [B, H], True for valid candidate heads.
+            This includes the artificial root.
+        """
 
-        # # Check that no gold target is about to be masked.
-        # # gold_head_is_valid = valid_head.gather(
-        # #     dim=1,
-        # #     index=heads.clamp_min(0),
-        # # )
-        # # invalid_gold = valid_dependent & ~gold_head_is_valid
-        # # if invalid_gold.any():
-        # #     batch_idx, dependent_idx = invalid_gold.nonzero(as_tuple=True)
-        # #     raise ValueError(
-        # #         "Some non-padding dependents point "
-        # #         "to masked candidate heads:\n"
-        # #         f"batch indices: {batch_idx.tolist()}\n"
-        # #         f"dependent indices: {dependent_idx.tolist()}\n"
-        # #         f"gold heads: {heads[invalid_gold].tolist()}"
-        # #     )
-
-        # # Remove padded tokens from the softmax over candidate heads.
-        # masked_scores = S_arc.masked_fill(
-        #     ~valid_head.unsqueeze(-1),  # [batch, candidate_head, 1]
-        #     float("-inf"),
-        # )
-
-        # # Select only valid dependent positions.
-        # #
-        # # S_arc.transpose(1, 2):
-        # # [batch, dependent, candidate_head]
-        # # active_scores = masked_scores.transpose(1, 2)[valid_dependent]
-        # # active_targets = heads[valid_dependent].long()
-
-        # # if active_targets.numel() == 0:
-        # #     return S_arc.sum() * 0.0
-
-        # # Verify that the gold logits are finite.
-        # # gold_scores = active_scores.gather(
-        # #     dim=1,
-        # #     index=active_targets.unsqueeze(1),
-        # # ).squeeze(1)
-
-        # # if not torch.isfinite(gold_scores).all():
-        # #     bad = ~torch.isfinite(gold_scores)
-        # #     raise ValueError(
-        # #         "Some gold-head logits are non-finite before cross-entropy:\n"
-        # #         f"targets: {active_targets[bad].tolist()}\n"
-        # #         f"scores: {gold_scores[bad].tolist()}"
-        # #     )
-
-        # # heads_ignore = torch.zeros_like(heads)
-        # # heads_ignore[:, 1:] = heads[:, 1:] == -1
-        # # heads_ignore = heads_ignore.unsqueeze(1).tile((1, S_arc.shape[-2], 1))
-        # # set impossible likelihood to predicted heads that are masked
-
-        # # S_arc = S_arc.transpose(-1, -2)
-        # # [batch, sent_len, sent_len (head preds)]
-
-        # # S_arc = S_arc.contiguous().view(-1, S_arc.size(-1))
-        # # # [batch*sent_len, sent_len]
-
-        # # heads = heads.view(-1)
-        # # # [batch*sent_len]
-        # # return losses.calc_loss_helper(
-        # #     S_arc, heads, attention_mask.bool(),
-        # #     printinfo=printinfo)
-        # # return self.criterion(S_arc, heads)
-
-        # # shape: (batch_size, seq_len, num_tags)
-        # # -> (batch_size, num_tags, seq_len)
-        # # S_arc = torch.movedim(S_arc, -1, 1)
-
-        # # # Only keep active parts of the loss
-        # # active_labels = torch.where(
-        # #     attention_mask, labels, -1
-        # # )
-
-        # # print(S_arc.shape)
-        # loss = F.cross_entropy(
-        #     masked_scores, heads, ignore_index=-1, reduction="mean")
-        # # print(loss.shape)
-        # # loss[:, 1:][heads[:, 1:] == -1] = 0
-        # # print(loss)
-        # # loss = loss.sum()/(heads.numel() - (heads[:, 1:] == -1).numel())
-        # # print(loss)
-        # return loss
-
-        # Avoid an in-place assignment such as valid_head[:, 0] = True.
-        valid_head = torch.cat(
-            (
-                torch.ones_like(heads[:, :1], dtype=torch.bool),
-                heads[:, 1:].ne(-1),
-            ),
-            dim=1,
-        )
-
-        masked_scores = S_arc.contiguous().masked_fill(
-            ~valid_head.unsqueeze(-1),
+        # Mask padded WORD positions as candidate heads.
+        #
+        # [B, H] -> [B, H, 1], broadcasting over dependents.
+        masked_scores = S_arc.masked_fill(
+            ~head_mask.unsqueeze(-1),
             float("-inf"),
         )
 
@@ -266,62 +197,10 @@ class BiAffineParser(nn.Module):
 
     def lab_loss(
             self, S_lab, heads, labels,
-            attention_mask: torch.Tensor,
+            attention_mask: torch.Tensor | None = None,
             printinfo: bool = False):
         """Compute the loss for the label predictions
         on the gold arcs (heads)."""
-        # ignore = heads == -1
-        # ignore[:, 0] = False  # indices don't get shifted by BOS token
-        # cumsum: torch.Tensor = torch.cumsum(ignore, dim=-1)  # [B, S]
-
-        # lens_non_ignore = (~ignore).sum(-1)
-        # aranges = pad_sequence([
-        #     torch.arange(0, le, device=ignore.device)
-        #     # does not need to be arange TODO: speed up
-        #     for le in lens_non_ignore],
-        #     batch_first=True, padding_value=-1)
-        # aranges[aranges != -1] = cumsum[~ignore]
-
-        # heads with index -1 are padding and are treated as
-        # index 0 here (to be disregarded later)
-
-        # heads = heads + (heads < 0)
-
-        # # # shift indices to select the correct deprels
-        # # heads += torch.gather(aranges, 1, heads)
-
-        # heads = heads.unsqueeze(1).unsqueeze(2)
-        # # [batch, 1, 1, sent_len]
-
-        # heads = heads.expand(-1, S_lab.size(1), -1, -1)
-        # # [batch, n_labels, 1, sent_len]
-
-        # # S_lab: [batch, n_labels, sent_len (potential heads), sent_len]
-        # S_lab = torch.gather(S_lab, 2, heads).squeeze(2)
-        # # [batch, n_labels, sent_len]
-
-        # # S_lab = S_lab.transpose(-1, -2)
-        # # [batch, sent_len, n_labels]
-
-        # # S_lab = S_lab.contiguous().view(-1, S_lab.size(-1))
-        # # # [batch*sent_len, n_labels]
-
-        # # labels = labels.view(-1)
-        # # # [batch*sent_len]
-
-        # # return losses.calc_loss_helper(
-        # #     S_lab, labels, attention_mask.bool(),
-        # #     printinfo=printinfo)
-        # # return self.criterion(S_lab, labels)
-        # # S_lab = torch.movedim(S_lab, -1, 1)
-
-        # # # Only keep active parts of the loss
-        # # active_labels = torch.where(
-        # #     attention_mask, labels, -1
-        # # )
-
-        # return F.cross_entropy(
-        #     S_lab, labels, ignore_index=-1, reduction="mean")
 
         safe_heads = heads.clamp_min(0).long()
 

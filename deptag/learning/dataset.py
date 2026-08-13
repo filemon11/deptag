@@ -242,98 +242,173 @@ class TaggingDataset(torch.utils.data.Dataset):
         input_ids, word_end_positions = self._encode_words(words)
 
         end_of_word = torch.zeros_like(input_ids)
-        pos_ids = torch.full_like(input_ids, -1)
-        deprel_ids = torch.full_like(input_ids, -1)
+        # pos_ids = torch.full_like(input_ids, -1)
+        # deprel_ids = torch.full_like(input_ids, -1)
 
         tag_ids_: list[int] = [
             (self.tag_system[w[2]] if w[2] in self.tag_system else 0)
             for w in sent]
 
         tag_ids = torch.tensor(tag_ids_, dtype=torch.long)
-        labels = torch.full_like(input_ids, -1)
+        # labels = torch.full_like(input_ids, -1)
 
-        heads_long = torch.full_like(input_ids, -1)
+        # heads_long = torch.full_like(input_ids, -1)
 
-        labels[word_end_positions] = tag_ids
-        pos_ids[word_end_positions] = torch.tensor(pos_tags, dtype=torch.long)
-        deprel_ids[word_end_positions] = torch.tensor(
-            deprel_tags, dtype=torch.long)
-        # print("heads", heads)
-        heads_long[word_end_positions] = heads  # [-1, x, y, -1, z]
-        # print("heads_long1", heads_long)
-        cumsum = torch.cumsum(heads_long == -1, dim=0) - 1  # [0, (0, 0), 1, (1,)]
-        # print("cumsum", cumsum)
-        head_cumsum = cumsum[~(heads_long == -1)]
-        # [1, (1, 1), 2, (2,)][False, True, True, False, True] -1 = [0, 0, 1]
-        head_cumsum = head_cumsum[heads-1 + ((heads - 1) < 0)]
-        head_cumsum[heads == 0] = 0
-        # [h_c[x], h_c[y], h_c[z]]
+        # labels[word_end_positions] = tag_ids
+        # pos_ids[word_end_positions] = torch.tensor(
+        #   pos_tags, dtype=torch.long)
+        # deprel_ids[word_end_positions] = torch.tensor(
+        #    # deprel_tags, dtype=torch.long)
+        # # print("heads", heads)
+        # heads_long[word_end_positions] = heads  # [-1, x, y, -1, z]
+        # # print("heads_long1", heads_long)
+        # cumsum = torch.cumsum(heads_long == -1, dim=0) - 1
+        # # [0, (0, 0), 1, (1,)]
+        # # print("cumsum", cumsum)
+        # head_cumsum = cumsum[~(heads_long == -1)]
+        # # [1, (1, 1), 2, (2,)][False, True, True, False, True] -1 = [0, 0, 1]
+        # head_cumsum = head_cumsum[heads-1 + ((heads - 1) < 0)]
+        # head_cumsum[heads == 0] = 0
+        # # [h_c[x], h_c[y], h_c[z]]
 
-        # print("head_cumsum", head_cumsum)
+        # # print("head_cumsum", head_cumsum)
 
-        heads_long[word_end_positions] += head_cumsum
+        # heads_long[word_end_positions] += head_cumsum
         # print("heads_long", heads_long)
         # print("pos_ids", pos_ids)
         end_of_word[word_end_positions] = 1
         end_of_word[word_end_positions[-1]] = 2  # last word
 
+        # return {
+        #     'input_ids': input_ids,
+        #     'pos_ids': pos_ids,
+        #     'end_of_word': end_of_word,
+        #     'labels': labels,
+        #     'heads': heads_long,
+        #     'deprel_ids': deprel_ids,
+        # }
         return {
-            'input_ids': input_ids,
-            'pos_ids': pos_ids,
-            'end_of_word': end_of_word,
-            'labels': labels,
-            'heads': heads_long,
-            'deprel_ids': deprel_ids,
+            "input_ids": input_ids,
+
+            # Transformer positions of the final subword of each UD word.
+            # Shape: [num_words]
+            "word_end_positions": word_end_positions,
+
+            # All of these are now WORD-level.
+            "pos_ids": torch.tensor(
+                pos_tags,
+                dtype=torch.long,
+            ),
+            "labels": tag_ids,
+            "heads": heads,  # original UD heads: 0..num_words
+            "deprel_ids": torch.tensor(
+                deprel_tags,
+                dtype=torch.long,
+            ),
         }
 
+    # def collate(self, batch):
+    #     # for GPT-2, self.pad_token_id is None
+    #     # pad_token_id = (
+    #     #     self.pad_token_id if self.pad_token_id is not None
+    #     #     else -100)
+    #     if self.pad_token_id is None:
+    #         raise ValueError("The tokenizer has no padding token.")
+
+    #     input_ids = pad_sequence(
+    #         [item['input_ids'] for item in batch],
+    #         batch_first=True, padding_value=self.pad_token_id)
+
+    #     # attention_mask = (input_ids != pad_token_id).float()
+    #     attention_mask = input_ids.ne(self.pad_token_id)
+
+    #     # # for GPT-2, change -100 back into 0
+    #     # input_ids = torch.where(
+    #     #     input_ids == -100,
+    #     #     0,
+    #     #     input_ids
+    #     # )
+
+    #     end_of_word = pad_sequence(
+    #         [item['end_of_word'] for item in batch],
+    #         batch_first=True, padding_value=0)
+
+    #     pos_ids = pad_sequence(
+    #         [item['pos_ids'] for item in batch],
+    #         batch_first=True, padding_value=-1)
+
+    #     deprel_ids = pad_sequence(
+    #         [item['deprel_ids'] for item in batch],
+    #         batch_first=True, padding_value=-1)
+
+    #     labels = pad_sequence(
+    #         [item['labels'] for item in batch],
+    #         batch_first=True, padding_value=-1)
+
+    #     heads = pad_sequence(
+    #         [item['heads'] for item in batch],
+    #         batch_first=True, padding_value=-1)
+
+    #     return {
+    #         'input_ids': input_ids,
+    #         'pos_ids': pos_ids,
+    #         'deprel_ids': deprel_ids,
+    #         'end_of_word': end_of_word,
+    #         'attention_mask': attention_mask,
+    #         'labels': labels,
+    #         'heads': heads,
+    #     }
+
     def collate(self, batch):
-        # for GPT-2, self.pad_token_id is None
-        # pad_token_id = (
-        #     self.pad_token_id if self.pad_token_id is not None
-        #     else -100)
-        if self.pad_token_id is None:
-            raise ValueError("The tokenizer has no padding token.")
-
         input_ids = pad_sequence(
-            [item['input_ids'] for item in batch],
-            batch_first=True, padding_value=self.pad_token_id)
+            [item["input_ids"] for item in batch],
+            batch_first=True,
+            padding_value=self.pad_token_id,
+        )
 
-        # attention_mask = (input_ids != pad_token_id).float()
-        attention_mask = input_ids.ne(self.pad_token_id)
+        attention_mask = input_ids.ne(
+            self.pad_token_id
+        )
 
-        # # for GPT-2, change -100 back into 0
-        # input_ids = torch.where(
-        #     input_ids == -100,
-        #     0,
-        #     input_ids
-        # )
-
-        end_of_word = pad_sequence(
-            [item['end_of_word'] for item in batch],
-            batch_first=True, padding_value=0)
+        # -1 means that this padded slot contains no word.
+        word_end_positions = pad_sequence(
+            [item["word_end_positions"] for item in batch],
+            batch_first=True,
+            padding_value=-1,
+        )
 
         pos_ids = pad_sequence(
-            [item['pos_ids'] for item in batch],
-            batch_first=True, padding_value=-1)
-
-        deprel_ids = pad_sequence(
-            [item['deprel_ids'] for item in batch],
-            batch_first=True, padding_value=-1)
+            [item["pos_ids"] for item in batch],
+            batch_first=True,
+            padding_value=-1,
+        )
 
         labels = pad_sequence(
-            [item['labels'] for item in batch],
-            batch_first=True, padding_value=-1)
+            [item["labels"] for item in batch],
+            batch_first=True,
+            padding_value=-1,
+        )
 
         heads = pad_sequence(
-            [item['heads'] for item in batch],
-            batch_first=True, padding_value=-1)
+            [item["heads"] for item in batch],
+            batch_first=True,
+            padding_value=-1,
+        )
+
+        deprel_ids = pad_sequence(
+            [item["deprel_ids"] for item in batch],
+            batch_first=True,
+            padding_value=-1,
+        )
 
         return {
-            'input_ids': input_ids,
-            'pos_ids': pos_ids,
-            'deprel_ids': deprel_ids,
-            'end_of_word': end_of_word,
-            'attention_mask': attention_mask,
-            'labels': labels,
-            'heads': heads,
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+
+            "word_end_positions": word_end_positions,
+
+            "pos_ids": pos_ids,
+            "labels": labels,
+            "heads": heads,
+            "deprel_ids": deprel_ids,
         }

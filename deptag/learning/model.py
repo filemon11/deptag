@@ -9,6 +9,7 @@ from transformers import AutoModel, BertModel
 
 
 class LayerMix(nn.Module):
+    # Proposed by https://aclanthology.org/D19-1279.pdf ?
     def __init__(self, num_layers: int):
         super().__init__()
         self.weights = nn.Parameter(
@@ -52,15 +53,15 @@ class ModelForTagging(nn.Module):
         self.transformer_layers = config.task_specific_params[
             "transformer_layers"]
 
-        self.bert: BertModel = AutoModel.from_pretrained(
+        self.encoder: BertModel = AutoModel.from_pretrained(
             self.model_path, config=config)
 
         import transformers.utils.output_capturing as hf_output_capturing
 
         hf_output_capturing.torch = torch
-        hf_output_capturing.maybe_install_capturing_hooks(self.bert)
+        hf_output_capturing.maybe_install_capturing_hooks(self.encoder)
 
-        # self.bert: BertModel = torch.compile(self.bert)
+        # self.encoder: BertModel = torch.compile(self.encoder)
 
         if self.use_pos:
             self.pos_encoder = nn.Sequential(
@@ -87,14 +88,14 @@ class ModelForTagging(nn.Module):
 
         # self.input_projection_parse = nn.Linear(
         #     transformer_input_dim, config.hidden_size)
-        self.input_projection_arc = nn.Linear(
-            transformer_input_dim, config.hidden_size)
-        self.input_projection_rel = nn.Linear(
-            transformer_input_dim, config.hidden_size)
-        self.input_projection_sup = nn.Linear(
-            transformer_input_dim, config.hidden_size)
-        self.input_projection_pos = nn.Linear(
-            transformer_input_dim, config.hidden_size)
+        # self.input_projection_arc = nn.Linear(
+        #     transformer_input_dim, config.hidden_size)
+        # self.input_projection_rel = nn.Linear(
+        #     transformer_input_dim, config.hidden_size)
+        # self.input_projection_sup = nn.Linear(
+        #     transformer_input_dim, config.hidden_size)
+        # self.input_projection_pos = nn.Linear(
+        #     transformer_input_dim, config.hidden_size)
 
         if self.transformer_layers > 0:
             encoder_layer = nn.TransformerEncoderLayer(
@@ -118,7 +119,7 @@ class ModelForTagging(nn.Module):
         self.projection = None
         if self.train_sup:
             self.projection = nn.Sequential(
-                nn.Linear(config.hidden_size, config.hidden_size),
+                nn.Linear(transformer_input_dim, config.hidden_size),
                 nn.GELU(),
                 nn.Dropout(self.dropout_rate),
                 nn.Linear(config.hidden_size, config.num_labels))
@@ -130,29 +131,39 @@ class ModelForTagging(nn.Module):
             #     nn.Linear(config.hidden_size, self.num_pos_tags)
             # )
             self.pos_projection = nn.Sequential(
-                nn.Linear(config.hidden_size, config.hidden_size),
+                nn.Linear(transformer_input_dim, config.hidden_size),
                 nn.GELU(),
                 nn.Dropout(self.dropout_rate),
                 nn.Linear(config.hidden_size, self.num_pos_tags))
 
         self.biaffine = None
+        self.root_arc = None
+        self.root_rel = None
         if (
                 config.task_specific_params["mlp_arc_hidden"] is not None
                 or config.task_specific_params["mlp_lab_hidden"] is not None):
             self.biaffine = biaffine.make_model(
-                config.hidden_size,
+                transformer_input_dim,
                 config.task_specific_params["mlp_arc_hidden"],
                 config.task_specific_params["mlp_lab_hidden"],
                 config.task_specific_params["mlp_dropout"],
                 config.task_specific_params["mlp_num_labels"],
             )
             # self.biaffine.compile()  # (dynamic=True)
+            self.root_arc = nn.Parameter(
+                torch.empty(config.hidden_size)
+            )
+            self.root_rel = nn.Parameter(
+                torch.empty(config.hidden_size)
+            )
+            nn.init.normal_(self.root_arc, std=0.02)
+            nn.init.normal_(self.root_rel, std=0.02)
 
     def forward(
             self,
             input_ids=None,
             pos_ids=None,
-            end_of_word=None,
+            word_end_positions=None,
             attention_mask=None,
             head_mask=None,
             inputs_embeds=None,
@@ -163,7 +174,7 @@ class ModelForTagging(nn.Module):
             report_loss: bool = False,
             printinfo: bool = False,
     ):
-        outputs = self.bert(
+        outputs = self.encoder(
             input_ids,
             attention_mask=attention_mask,
             head_mask=head_mask,
@@ -179,20 +190,48 @@ class ModelForTagging(nn.Module):
         token_repr_pos = self.pos_mix(outputs["hidden_states"])
         # print(num_layers, round(num_layers*(2/3)), round(num_layers*(1/3)))
 
-        if self.use_pos:
-            pos_input = torch.where(
-                pos_ids >= 0,
-                pos_ids,
-                0,
+        word_repr_arc, word_mask = (
+            self._gather_word_representations(
+                token_repr_arc,
+                word_end_positions,
             )
+        )
 
-            pos_encodings = self.pos_encoder(pos_input)
-            # token_repr_parse = torch.cat(
-            #     [token_repr_parse, pos_encodings], dim=-1)
-            token_repr_arc = torch.cat(
-                    [token_repr_arc, pos_encodings], dim=-1)
-            token_repr_rel = torch.cat(
-                    [token_repr_rel, pos_encodings], dim=-1)
+        word_repr_rel, _ = (
+            self._gather_word_representations(
+                token_repr_rel,
+                word_end_positions,
+            )
+        )
+
+        word_repr_sup, _ = (
+            self._gather_word_representations(
+                token_repr_sup,
+                word_end_positions,
+            )
+        )
+
+        word_repr_pos, _ = (
+            self._gather_word_representations(
+                token_repr_pos,
+                word_end_positions,
+            )
+        )
+
+        # if self.use_pos:
+        #     pos_input = torch.where(
+        #         pos_ids >= 0,
+        #         pos_ids,
+        #         0,
+        #     )
+        #
+        #     pos_encodings = self.pos_encoder(pos_input)
+        #     # token_repr_parse = torch.cat(
+        #     #     [token_repr_parse, pos_encodings], dim=-1)
+        #     token_repr_arc = torch.cat(
+        #             [token_repr_arc, pos_encodings], dim=-1)
+        #     token_repr_rel = torch.cat(
+        #             [token_repr_rel, pos_encodings], dim=-1)
         # else:
         #     token_repr_parse = outputs[0]
 
@@ -216,10 +255,10 @@ class ModelForTagging(nn.Module):
         #     dim=-1)
 
         # token_repr_parse = self.input_projection_parse(token_repr_parse)
-        token_repr_arc = self.input_projection_arc(token_repr_arc)
-        token_repr_rel = self.input_projection_rel(token_repr_rel)
-        token_repr_sup = self.input_projection_sup(token_repr_sup)
-        token_repr_pos = self.input_projection_pos(token_repr_pos)
+        # word_repr_arc = self.input_projection_arc(word_repr_arc)
+        # word_repr_rel = self.input_projection_rel(word_repr_rel)
+        # word_repr_sup = self.input_projection_sup(word_repr_sup)
+        # word_repr_pos = self.input_projection_pos(word_repr_pos)
 
         # if self.transformer_layers > 0:
         #     padding_mask = attention_mask == 0
@@ -230,17 +269,73 @@ class ModelForTagging(nn.Module):
 
         tag_logits = None
         if self.projection is not None:
-            tag_logits = self.projection(self.dropout(token_repr_sup))
+            tag_logits = self.projection(self.dropout(word_repr_sup))
 
         pos_logits = None
         if self.pos_projection is not None:
-            pos_logits = self.pos_projection(self.dropout(token_repr_pos))
+            pos_logits = self.pos_projection(self.dropout(word_repr_pos))
 
         S_arc = None
         S_lab = None
         if self.biaffine is not None:
+            root_arc = self.root_arc[None, None, :].expand(
+                word_repr_arc.shape[0], 1, -1
+            )
+            root_rel = self.root_rel[None, None, :].expand(
+                word_repr_arc.shape[0], 1, -1
+            )
+
+            parse_repr_arc = torch.cat(
+                [root_arc, word_repr_arc],
+                dim=1,
+            )
+
+            parse_repr_rel = torch.cat(
+                [root_rel, word_repr_rel],
+                dim=1,
+            )
+
+            root_mask = torch.ones(
+                (word_mask.shape[0], 1),
+                dtype=torch.bool,
+                device=word_mask.device,
+            )
+
+            parse_mask = torch.cat(
+                [root_mask, word_mask],
+                dim=1,
+            )
+            # [B, W + 1]
+
+            root_heads = torch.full(
+                (heads.shape[0], 1),
+                -1,
+                dtype=heads.dtype,
+                device=heads.device,
+            )
+
+            heads = torch.cat(
+                [root_heads, heads],
+                dim=1,
+            )
+
+            deprel_ids = torch.cat(
+                [
+                    torch.full(
+                        (deprel_ids.shape[0], 1),
+                        -1,
+                        dtype=deprel_ids.dtype,
+                        device=deprel_ids.device,
+                    ),
+                    deprel_ids,
+                ],
+                dim=1,
+            )
+
             S_arc, S_lab = self.biaffine(
-                token_repr_arc, token_repr_rel)
+                parse_repr_arc,
+                parse_repr_rel,
+            )
 
         loss = None
         pos_loss = None
@@ -250,27 +345,78 @@ class ModelForTagging(nn.Module):
                 labels is not None and (self.training or report_loss)
                 and tag_logits is not None):
             loss = losses.calc_loss_helper(
-                tag_logits, labels, attention_mask.bool(),
+                tag_logits, labels,  # word_mask,
                 printinfo=printinfo
             )
         if self.pos_projection is not None:
             assert pos_logits is not None
             pos_loss = losses.calc_loss_helper(
-                pos_logits, pos_ids, attention_mask.bool(),
+                pos_logits, pos_ids,  # word_mask,
                 printinfo=printinfo
             )
         if heads is not None:
             if self.biaffine is not None:
                 if self.biaffine.arc_mlp_d is not None:
-                    arc_loss = self.biaffine.arc_loss(
-                        S_arc, heads, attention_mask.bool(),
-                        printinfo=printinfo)
+                    # arc_loss = self.biaffine.arc_loss(
+                    #     S_arc, heads, attention_mask.bool(),
+                    #     printinfo=printinfo)
                     # print("arc_loss", arc_loss)
+                    arc_loss = self.biaffine.arc_loss(
+                        S_arc,
+                        heads,
+                        parse_mask,
+                        printinfo=printinfo,
+                    )
                 if self.biaffine.lab_mlp_d is not None:
                     label_loss = self.biaffine.lab_loss(
-                        S_lab, heads, deprel_ids, attention_mask.bool(),
+                        S_lab, heads, deprel_ids,
                         printinfo=printinfo)
 
         return (
             loss, tag_logits, pos_loss, pos_logits,
             arc_loss, S_arc, label_loss, S_lab)
+
+    @staticmethod
+    def _gather_word_representations(
+            token_repr: torch.Tensor,
+            word_end_positions: torch.Tensor,
+            ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Select one transformer representation per UD word.
+
+        Parameters
+        ----------
+        token_repr
+            [B, S_subword, H]
+        word_end_positions
+            [B, S_word], padded with -1.
+
+        Returns
+        -------
+        word_repr
+            [B, S_word, H]
+        word_mask
+            [B, S_word]
+        """
+        word_mask = word_end_positions >= 0
+
+        # Padding positions are -1 and cannot be passed to gather.
+        # Their actual gathered value is irrelevant because word_mask
+        # excludes them everywhere downstream.
+        safe_positions = word_end_positions.clamp_min(0)
+
+        gather_index = safe_positions.unsqueeze(-1).expand(
+            -1,
+            -1,
+            token_repr.shape[-1],
+        )
+
+        word_repr = torch.gather(
+            token_repr,
+            dim=1,
+            index=gather_index,
+        )
+
+        # makes padded representations explicitly zero.
+        word_repr = word_repr * word_mask.unsqueeze(-1)
+
+        return word_repr, word_mask

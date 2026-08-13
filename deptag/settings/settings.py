@@ -45,7 +45,7 @@ class TaggingSettings:
     batch_size: int
     model_name: str
     model_path: str
-    lr: float
+    # lr: float
     epochs: int
     grad_acc: int = 1
     tol: int = 99999
