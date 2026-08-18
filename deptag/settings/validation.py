@@ -13,6 +13,16 @@ def assert_dep_settings(
                 )
 
 
+def assert_tagging_settings(
+        sett: settings.TaggingSettings) -> None:
+    if sett.factorised == "structural":
+        assert sett.eval_metric.endswith(
+                "uas") or not sett.deprels_from_supertags, (
+            "Cannot use dummy labels from structural supertags"
+            " for laballed attachment score."
+        )
+
+
 def assert_dep_standard(
         sett: settings.DepSettings,
         stan: standards.DeprelStandard,

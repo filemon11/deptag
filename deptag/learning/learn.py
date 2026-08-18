@@ -14,11 +14,11 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.amp.grad_scaler import GradScaler
 import tqdm
 import pathlib
-from . import model, dataset, evaluate
-from .. import extraction, data, settings, parsing
+from . import model, dataset, evaluate, factorisation
+from .. import extraction, data, settings, parsing, utils
 import dataclasses
 
-from typing import Mapping, Sequence, Self, Type
+from typing import Mapping, Sequence, Self, Type, Literal
 
 # torch.backends.cuda.enable_flash_sdp(False)
 # torch.backends.cuda.enable_mem_efficient_sdp(False)
@@ -69,7 +69,6 @@ def save_vocab(args: settings.Settings):
             args.deprels.distinguish_merged_fallback_subtypes),
         order_relations=args.deprels.order_relations,
         )
-    print(sup2id, not args.deprels.labelled)
 
     path = pathlib.Path(args.tagging.tag_vocab_path)
     path.mkdir(parents=True, exist_ok=True)
@@ -84,7 +83,8 @@ def prepare_training_data(
         dataset_name: str,
         tag_system: Mapping[str, int],
         model_path: str,
-        batch_size: int
+        batch_size: int,
+        factorised: bool = False,
         ) -> tuple[
             dataset.TaggingDataset, dataset.TaggingDataset,
             DataLoader, DataLoader]:
@@ -92,10 +92,17 @@ def prepare_training_data(
     tokeniser = transformers.AutoTokenizer.from_pretrained(
         model_path.split("/")[-1], truncation=True, use_fast=True)
 
+    if factorised:
+        factorised_max_left_right = get_max_lr(tag_system)
+    else:
+        factorised_max_left_right = None
+
     train_dataset = dataset.TaggingDataset(
-        "train", tokeniser, tag_system, train_data, device, dataset_name)
+        "train", tokeniser, tag_system, train_data, device, dataset_name,
+        factorised_max_left_right=factorised_max_left_right)
     eval_dataset = dataset.TaggingDataset(
-        "eval", tokeniser, tag_system, eval_data, device, dataset_name)
+        "eval", tokeniser, tag_system, eval_data, device, dataset_name,
+        factorised_max_left_right=factorised_max_left_right)
 
     train_dataloader = DataLoader(
         train_dataset, shuffle=True, batch_size=batch_size,
@@ -114,14 +121,21 @@ def prepare_test_data(
         dataset_name: str,
         tag_system: Mapping[str, int],
         model_path: str,
-        batch_size: int) -> tuple[dataset.TaggingDataset, DataLoader]:
+        batch_size: int,
+        factorised: bool = False) -> tuple[dataset.TaggingDataset, DataLoader]:
 
     print(f"Evaluating {model_path}")
     tokeniser = transformers.AutoTokenizer.from_pretrained(
         model_path.split("/")[-1], truncation=True, use_fast=True)
+
+    if factorised:
+        factorised_max_left_right = get_max_lr(tag_system)
+    else:
+        factorised_max_left_right = None
+
     test_dataset = dataset.TaggingDataset(
         "test", tokeniser, tag_system, test_data, device,
-        dataset_name
+        dataset_name, factorised_max_left_right=factorised_max_left_right,
     )
     test_dataloader = DataLoader(
         test_dataset,
@@ -138,55 +152,33 @@ SUPPORTED_BACKBONES = {
     "albert",
 }
 
-# def generate_config(
-#         model_type: str, tag_system: Mapping[str, int], model_path: str,
-#         train_pos: bool = True,
-#         num_pos_tags: int = 50, num_deprel_tags: int | None = None,
-#         train_arc: bool = False,
-#         train_sup: bool = True):
-#     if model_type in BERT:
-#         config = transformers.AutoConfig.from_pretrained(
-#             model_path,
-#             num_labels=len(tag_system)+1,
-#         )
-#         config.task_specific_params = {
-#                 'model_path': model_path,
-#                 'pos_emb_dim': 256,
-#                 'num_pos_tags': num_pos_tags+1,
-#                 # 'lstm_layers': 3,
-#                 'dropout': 0,  # 0.33,
-#                 'use_pos': False,
-#                 'n_heads': 12,
-#                 'transformer_layers': 0,
-#                 'train_pos': train_pos,
-#                 'mlp_arc_hidden': 500 if train_arc is not None else None,
-#                 'mlp_lab_hidden': 100 if num_deprel_tags is not None else None,
-#                 'mlp_dropout': 0.3,
-#                 'mlp_num_labels': (
-#                     num_deprel_tags+1 if num_deprel_tags is not None
-#                     else None),
-#                 'train_sup': train_sup,
-#         }
-#     else:
-#         logging.error("Invalid model type.")
-#         return
-#     return config
+
+def get_max_lr(tag_system: Mapping[str, int]) -> tuple[int, int]:
+    factorised_tags = [extraction.convert_relative_tag_to_factorised(
+        extraction.convert_string_to_relative_relation(
+            sup)) for sup in tag_system]
+    max_l = max([tag[0] for tag in factorised_tags])
+    max_r = max([tag[2] for tag in factorised_tags])
+    return max_l, max_r
 
 
 def generate_config(
         model_type: str,
         tag_system: Mapping[str, int],
         model_path: str,
+        num_deprel_tags: int,
+        train_deprel: bool = False,
         train_pos: bool = True,
         num_pos_tags: int = 50,
-        num_deprel_tags: int | None = None,
         train_arc: bool = False,
         train_sup: bool = True,
+        factorised: Literal[
+            "structural", "complete", "seen", False] = False,
         ) -> transformers.PretrainedConfig:
 
     config = transformers.AutoConfig.from_pretrained(
         model_path,
-        num_labels=len(tag_system) + 1,
+        num_labels=len(tag_system),
     )
 
     if config.model_type not in SUPPORTED_BACKBONES:
@@ -197,6 +189,11 @@ def generate_config(
 
     num_encoder_layers = config.num_hidden_layers
 
+    max_l = None
+    max_r = None
+    if factorised is not None:
+        max_l, max_r = get_max_lr(tag_system)
+
     config.task_specific_params = {
         "model_path": model_path,
 
@@ -206,8 +203,8 @@ def generate_config(
         "encoder_num_attention_heads": config.num_attention_heads,
 
         "pos_emb_dim": 256,
-        "num_pos_tags": num_pos_tags + 1,
-        "dropout": 0.2,
+        "num_pos_tags": num_pos_tags,
+        "dropout": 0.3,
         "use_pos": False,
 
         "n_heads": config.num_attention_heads,
@@ -226,16 +223,20 @@ def generate_config(
         "mlp_arc_hidden": 500 if train_arc else None,
 
         "mlp_lab_hidden": (
-            200 if num_deprel_tags is not None else None
+            200 if train_deprel else None
             # previously 100
         ),
         "mlp_dropout": 0.3,
         "mlp_num_labels": (
-            num_deprel_tags + 1
-            if num_deprel_tags is not None
+            num_deprel_tags
+            if train_deprel
             else None
         ),
+        "deprel_num": num_deprel_tags,
         "train_sup": train_sup,
+        "factorised": factorised,
+        "max_l": max_l,
+        "max_r": max_r,
     }
 
     return config
@@ -243,14 +244,17 @@ def generate_config(
 
 def initialize_model(
         model_type: str, tag_system: Mapping[str, int], model_path: str,
+        num_deprel_tags: int, train_deprel: bool = False,
         train_pos: bool = True, num_pos_tags: int = 50,
-        num_deprel_tags: int | None = None, train_arc: bool = False,
+        train_arc: bool = False,
         train_sup: bool = True,
+        factorised: Literal['structural', 'complete', 'seen', False] = False,
         ) -> model.ModelForTagging | None:
     config = generate_config(
         model_type, tag_system, model_path, train_pos=train_pos,
         num_pos_tags=num_pos_tags, num_deprel_tags=num_deprel_tags,
-        train_arc=train_arc, train_sup=train_sup
+        train_arc=train_arc, train_sup=train_sup,
+        factorised=factorised, train_deprel=train_deprel,
     )
     tagging_model = model.ModelForTagging(config=config)
     # torch.compiler.reset()
@@ -398,7 +402,8 @@ def register_run_metrics(
         # lr,
         epochs, tag_accuracy: float | None = None,
         pos_accuracy: None | float = None, arc_accuracy: None | float = None,
-        deprel_accuracy: None | float = None):
+        deprel_accuracy: None | float = None,
+        factorised_accuracies: dict[str, float] = dict()):
     add_dict = {}
     if pos_accuracy is not None:
         add_dict['pos_accuracy'] = pos_accuracy
@@ -408,6 +413,8 @@ def register_run_metrics(
         add_dict['arc_accuracy'] = arc_accuracy
     if deprel_accuracy is not None:
         add_dict['deprel_accuracy'] = deprel_accuracy
+    for f_name, acc in factorised_accuracies.items():
+        add_dict[f_name] = acc
 
     writer.add_hparams(
         {
@@ -422,11 +429,14 @@ def get_accuracies(
         pos_predictions, eval_pos_labels,
         arc_predictions, eval_arc_labels,
         deprel_predictions, eval_deprel_labels,
+        factorised_predictions, eval_factorised_labels,
+        f_supertag_scores, printinfo: bool = True,
         *, k: int = 1):
     dev_sup_acc = None
     dev_pos_acc = None
     dev_arc_acc = None
     dev_deprel_acc = None
+    dev_factorised_accs = dict()
     if k == 1:
         func = evaluate.calc_tag_accuracy_k
     else:
@@ -435,28 +445,43 @@ def get_accuracies(
         dev_pos_acc = func(
             pos_predictions, eval_pos_labels, writer,
             use_tensorboard, n_iter,
-            typ="pos", k=k)
+            typ="pos", k=k, printinfo=printinfo)
     if arc_predictions is not None:
         dev_arc_acc = func(
             arc_predictions, eval_arc_labels, writer,
             use_tensorboard, n_iter,
-            typ="arc", k=k)
+            typ="arc", k=k, printinfo=printinfo)
     if deprel_predictions is not None:
         dev_deprel_acc = func(
             deprel_predictions, eval_deprel_labels, writer,
             use_tensorboard, n_iter,
-            typ="deprel", k=k)
+            typ="deprel", k=k, printinfo=printinfo)
     if sup_predictions is not None:
         dev_sup_acc = func(
             sup_predictions, eval_sup_labels, writer,
             use_tensorboard, n_iter,
-            typ="sup", k=k)
+            typ="sup", k=k, printinfo=printinfo)
+        evaluate.calc_tag_accuracy_upto_k(
+            sup_predictions, eval_sup_labels, writer,
+            use_tensorboard, n_iter,
+            typ="sup", k=10, printinfo=True)
+    for f_name, f_predictions in factorised_predictions.items():
+        dev_factorised_accs[f_name] = func(
+            f_predictions, eval_factorised_labels[f_name],
+            writer, use_tensorboard, n_iter,
+            typ=f_name, k=k, printinfo=printinfo
+        )
 
-    if k == 1:
-        return (
-            dev_sup_acc, dev_pos_acc,
-            dev_arc_acc, dev_deprel_acc)
-    return dev_sup_acc, dev_pos_acc, dev_arc_acc, dev_deprel_acc
+    # TODO: get log probs
+    if f_supertag_scores is not None:
+        dev_sup_acc = func(
+            f_supertag_scores, eval_sup_labels, writer,
+            use_tensorboard, n_iter,
+            typ="sup", k=k, printinfo=printinfo)
+
+    return (
+        dev_sup_acc, dev_pos_acc, dev_arc_acc,
+        dev_deprel_acc, dev_factorised_accs)
 
 
 @dataclasses.dataclass
@@ -529,6 +554,226 @@ def select_deprel_logits(
     # [B, D, L]
 
 
+def get_eval_metric(
+        eval_metric_type: Literal[
+            "cacc", "a*-las", "a*-uas", "mst-las", "mst-uas"],
+        factorised: Literal["complete", "structural", "seen", False],
+        deprels_from_supertags: bool,
+        combined_acc: float,
+        sup_predictions: np.ndarray | None,
+        arc_predictions: np.ndarray | None,
+        pos_predictions: np.ndarray | None,
+        deprel_predictions: np.ndarray | None,
+        factorised_predictions: Mapping[str, np.ndarray],
+        seen_supertag_scores: np.ndarray | None,
+        eval_sup_labels: np.ndarray,
+        eval_arc_labels: np.ndarray | None,
+        eval_deprel_labels: np.ndarray | None,
+        id2pos: Mapping[int, str],
+        id2deprel: Mapping[int, str],
+        deprel2id: Mapping[str, int],
+        id2sup: Mapping[int, str],
+        sup2id: Mapping[str, int],
+        id2sup_relative: Mapping[int, extraction.RelativeTag],
+        valid_id2sup: Mapping[int, str] | None,
+        valid_id2sup_relative: Mapping[int, extraction.RelativeTag] | None,
+        valid_factors: None | factorisation.SupertagFactors,
+        max_l: int,
+        max_r: int,
+        k_supertag: int,
+        k_head_scores: int,
+        ) -> float:
+    eval_metric: float
+    match eval_metric_type:
+        case "cacc":
+            eval_metric = combined_acc
+
+        case "a*-las" | "a*-uas":
+            root_supertag = "*+root"
+
+            assert arc_predictions is not None
+            assert eval_arc_labels is not None
+            assert pos_predictions is not None
+
+            chart_id2sup: Mapping[int, str]
+            chart_id2sup_relative: Mapping[int, extraction.RelativeTag]
+            if factorised == "complete":
+                argument_logps = {
+                    f_name: -utils.neg_log10_softmax(f_pred)
+                    for f_name, f_pred in
+                    factorised_predictions.items() if
+                    f_name.startswith("left") or
+                    f_name.startswith("right")
+                }
+                candidates = factorisation.top_k_valid_supertags_batch(
+                    argument_logps,
+                    -utils.neg_log10_softmax(
+                        factorised_predictions["l_arg_nums"]),
+                    -utils.neg_log10_softmax(
+                        factorised_predictions["r_arg_nums"]),
+                    -utils.neg_log10_softmax(
+                        factorised_predictions["aux_positions"]),
+                    -utils.neg_log10_softmax(
+                        factorised_predictions["aux_rel_ids"]),
+                    id2deprel,
+                    max_l, max_r, k=k_supertag,
+                    projective_only=True,
+                    valid_mask=eval_sup_labels != -1,
+                )
+
+                (
+                    supertag_scores,
+                    chart_id2sup,
+                    chart_sup2id,
+                ) = factorisation.make_batch_supertag_scores(
+                    candidates,
+                    root_supertag,
+                )
+                chart_id2sup_relative = {
+                    i: extraction.convert_string_to_relative_relation(
+                        tag)
+                    for i, tag in chart_id2sup.items()}
+                root_sup_id = chart_sup2id[root_supertag]
+                chart_deprel_dict = deprel2id
+            elif factorised == "structural":
+                assert valid_factors is not None
+                supertag_scores = (
+                    -factorisation.score_structural_supertags_batch(
+                        valid_factors,
+                        -utils.neg_log10_softmax(
+                            factorised_predictions["l_arg_nums"]),
+                        -utils.neg_log10_softmax(
+                            factorised_predictions["r_arg_nums"]),
+                        -utils.neg_log10_softmax(
+                            factorised_predictions["aux_positions"]),
+                    ))
+                assert valid_id2sup is not None
+                assert valid_id2sup_relative is not None
+                chart_id2sup = valid_id2sup
+                chart_id2sup_relative = valid_id2sup_relative
+                chart_sup2id = {
+                    sup: i for i, sup in chart_id2sup.items()}
+                chart_deprel_dict = {"_": 0, "dep": 0, "root": 0}
+                root_sup_id = chart_sup2id["*+_"]
+            elif factorised == "seen":
+                assert seen_supertag_scores is not None
+                supertag_scores = utils.neg_log10_softmax(
+                    seen_supertag_scores)
+                chart_id2sup = id2sup
+                chart_id2sup_relative = id2sup_relative
+
+                chart_deprel_dict = deprel2id
+                root_sup_id = sup2id[root_supertag]
+            else:
+                assert sup_predictions is not None
+                supertag_scores = utils.neg_log10_softmax(sup_predictions)
+                chart_id2sup = id2sup
+                chart_id2sup_relative = id2sup_relative
+                chart_deprel_dict = deprel2id
+                root_sup_id = sup2id[root_supertag]
+
+            # if epo > -1:
+            head_preds_astar, deprel_preds_astar = parsing.chart(
+                arc_predictions,
+                eval_arc_labels,
+                supertag_scores,
+                chart_id2sup_relative,
+                id2pos,
+                chart_deprel_dict,
+                pos_predictions.argmax(-1),
+                max_l,
+                max_r,
+                root_sup_id=root_sup_id,
+                k_supertag=k_supertag,
+                k_head_scores=k_head_scores,
+            )
+
+            assert eval_deprel_labels is not None
+
+            if eval_metric_type == "a*-las":
+
+                if not deprels_from_supertags:
+                    assert deprel_predictions is not None
+
+                    # deprel_predictions: [B, D, H, L]
+                    # head_preds_astar:   [B, D]
+                    deprel_logits_astar = select_deprel_logits(
+                        deprel_predictions,
+                        head_preds_astar,
+                    )
+                    # [B, D, L]
+
+                    deprel_preds_astar = (
+                        deprel_logits_astar.argmax(-1)
+                    )
+                    # [B, D]
+
+                eval_metric = parsing.las(
+                    head_preds_astar,
+                    deprel_preds_astar,
+                    eval_arc_labels,
+                    eval_deprel_labels,
+                    id2deprel=id2deprel
+                )
+
+            else:  # a*-uas
+                eval_metric = parsing.uas(
+                    head_preds_astar,
+                    eval_arc_labels,
+                )
+
+            # else:
+            #     eval_metric = 0
+            #     tol = 99999
+
+        case "mst-las" | "mst-uas":
+            assert arc_predictions is not None
+            assert eval_arc_labels is not None
+
+            mst = parsing.mst(
+                arc_predictions,
+                eval_arc_labels,
+            )
+            # mst: [B, D]
+
+            if eval_metric_type == "mst-las":
+                assert deprel_predictions is not None
+                assert eval_deprel_labels is not None
+
+                # deprel_predictions: [B, D, H, L]
+                deprel_logits_mst = select_deprel_logits(
+                    deprel_predictions,
+                    mst,
+                )
+                # [B, D, L]
+
+                deprel_predictions_mst = (
+                    deprel_logits_mst.argmax(-1)
+                )
+                # [B, D]
+
+                eval_metric = parsing.las(
+                    mst,
+                    deprel_predictions_mst,
+                    eval_arc_labels,
+                    eval_deprel_labels,
+                )
+
+            else:  # mst-uas
+                eval_metric = parsing.uas(
+                    mst,
+                    eval_arc_labels,
+                )
+
+        case _:
+            raise Exception(
+                f"args.tagging.eval_metric "
+                f"'{eval_metric_type}' unknown"
+            )
+
+    return eval_metric
+
+
 def train_command(args: settings.Settings):
     data_path = pathlib.Path(args.file.data_folder)
     prefix: str = args.file.conllu_file
@@ -568,9 +813,14 @@ def train_command(args: settings.Settings):
     train_dataset, dev_dataset, train_dataloader, dev_dataloader = (
         prepare_training_data(
             train_data, dev_data, prefix,
-            sup2id, args.tagging.model_path, args.tagging.batch_size))
+            sup2id, args.tagging.model_path, args.tagging.batch_size,
+            factorised=args.tagging.factorised is not False))
 
     id2sup = {i: sup for sup, i in sup2id.items()}
+    id2sup_relative = {
+        i: extraction.convert_string_to_relative_relation(tag)
+        for i, tag in id2sup.items()}
+
     id2relative_sup: dict[
         int, None | extraction.ProjectiveTag]
     id2relative_sup = {
@@ -583,16 +833,21 @@ def train_command(args: settings.Settings):
     max_l = max([lr[0] for lr in lr_args])
     max_r = max([lr[1] for lr in lr_args])
 
-    id2pos = {i: pos for pos, i in train_dataset.pos_dict.items()}
+    id2pos = {
+        i: pos for pos, i in train_dataset.pos_dict.items()}
+    id2deprel = {
+        i: deprel for deprel, i in train_dataset.deprel_dict.items()}
 
     logging.info("Initializing the model")
     model = initialize_model(
         args.tagging.model_name, sup2id, args.tagging.model_path,
         train_pos=args.tagging.train_pos,
         num_pos_tags=len(train_dataset.pos_dict),
-        num_deprel_tags=len(
-            train_dataset.deprel_dict) if args.tagging.train_deprel else None,
-        train_arc=args.tagging.train_arc, train_sup=args.tagging.train_sup
+        num_deprel_tags=len(train_dataset.deprel_dict),
+        train_deprel=args.tagging.train_deprel,
+        train_arc=args.tagging.train_arc,
+        train_sup=args.tagging.train_sup,
+        factorised=args.tagging.factorised,
     )
     assert model is not None
     model.to(device)
@@ -666,11 +921,51 @@ def train_command(args: settings.Settings):
     if not args.tagging.use_tensorboard:
         writer = None
 
+    seen_factors = None
+    valid_factors = None
+    valid_supertag2id = None
+    valid_id2sup = None
+    valid_id2sup_relative = None
+    if args.tagging.factorised is not False:
+        if args.tagging.factorised in ("complete", "seen"):
+            seen_factors = factorisation.preprocess_supertags(
+                sup2id,
+                train_dataset.deprel_dict,
+                max_l,
+                max_r,
+            )
+
+        if args.tagging.eval_metric.startswith("a*"):
+            # print(len(train_dataset.deprel_dict)); raise Exception
+            if args.tagging.factorised == "structural":
+                valid_supertag2id = (
+                    factorisation.generate_valid_structural_supertag2id(
+                        max_l=max_l,
+                        max_r=max_r,
+                        mode="projective",
+                    ))
+
+                valid_factors = factorisation.preprocess_supertags(
+                    valid_supertag2id,
+                    {"_": 0},
+                    max_l,
+                    max_r,
+                )
+                valid_id2sup = {
+                    i: sup for sup, i in valid_supertag2id.items()}
+                valid_id2sup_relative = {
+                    i: extraction.convert_string_to_relative_relation(tag)
+                    for i, tag in valid_id2sup.items()}
+
     # freeze_factor = 5
 
     # three load methods: load / continue / init
     # state dict:
     # n_iter, best_acc, tol, args.tagging.epochs, epo
+
+    # TODO: change
+    k_supertag = args.tagging.k_supertag
+    k_head_scores = args.tagging.k_head_scores
 
     for epo in tqdm.tqdm(range(epo, args.tagging.epochs)):
         # if (epo+1) % freeze_factor == 0:
@@ -708,6 +1003,7 @@ def train_command(args: settings.Settings):
                     pos_loss = outputs[2]
                     arc_loss = outputs[4]
                     deprel_loss = outputs[6]
+                    factorised_losses = outputs[8]
 
                     loss: torch.Tensor = torch.zeros(
                         (1,), device="cpu" if device == torch.device("cpu")
@@ -727,6 +1023,10 @@ def train_command(args: settings.Settings):
                     if deprel_loss is not None:
                         loss += deprel_loss
                         num_losses += 1
+                    if factorised_losses is not None:
+                        for f_loss in factorised_losses.values():
+                            loss += f_loss
+                            num_losses += 1
                     loss /= num_losses
 
                 scaler.scale(loss / args.tagging.grad_acc).backward()
@@ -748,6 +1048,10 @@ def train_command(args: settings.Settings):
                         if deprel_loss is not None:
                             writer.add_scalar(
                                 'DeprelLoss/train', deprel_loss, n_iter)
+                        if factorised_losses is not None:
+                            for f_name, f_loss in factorised_losses.items():
+                                writer.add_scalar(
+                                    f'{f_name}Loss/train', f_loss, n_iter)
                     progbar.set_postfix(loss=loss.item())
 
                     scaler.unscale_(optimizer)
@@ -768,9 +1072,11 @@ def train_command(args: settings.Settings):
                 pos_predictions, eval_pos_labels,
                 arc_predictions, eval_arc_labels,
                 deprel_predictions, eval_deprel_labels,
+                factorised_predictions, eval_factorised_labels,
                 dev_loss,
                 dev_sup_loss, dev_pos_loss,
-                dev_arc_loss, dev_deprel_loss) = (
+                dev_arc_loss, dev_deprel_loss,
+                dev_factorised_losses) = (
                 evaluate.predict(
                     model, dev_dataloader, len(dev_dataset),
                     len(sup2id), args.tagging.batch_size, device,
@@ -793,26 +1099,12 @@ def train_command(args: settings.Settings):
                 if dev_deprel_loss is not None:
                     writer.add_scalar(
                         'DeprelLoss/dev', dev_deprel_loss, n_iter)
+                for f_name, f_dev_loss in dev_factorised_losses.items():
+                    writer.add_scalar(
+                        f'{f_name}Loss/dev', f_dev_loss, n_iter
+                    )
 
             deprel_predictions_ = deprel_predictions
-            # if (
-            #         deprel_predictions is not None
-            #         and eval_deprel_labels is not None):
-            #     assert eval_arc_labels is not None
-            #     hds = eval_arc_labels + (eval_arc_labels < 0)
-            #     # [B, S]
-            #     hds = hds[..., np.newaxis, np.newaxis].repeat(
-            #         deprel_predictions.shape[-1], axis=-1)
-            #     # [B, S, 1, N]
-
-            #     # deprel_predictions, [B, S, Slab, N]
-
-            #     deprel_predictions_ = np.take_along_axis(
-            #         deprel_predictions, hds, axis=2)
-            #     # [B, S, 1, N]
-            #     deprel_predictions_ = np.squeeze(
-            #         deprel_predictions_, axis=2)
-            #     # [B, S, N]
             if (
                     deprel_predictions is not None
                     and eval_deprel_labels is not None
@@ -846,13 +1138,34 @@ def train_command(args: settings.Settings):
                 )
                 # [B, D, L]
 
-            dev_sup_acc, dev_pos_acc, dev_arc_acc, dev_deprel_acc = (
+            f_supertag_scores = None
+            if args.tagging.factorised in ("seen", "complete"):
+                assert seen_factors is not None
+                f_supertag_scores = factorisation.score_supertags_batch(
+                    seen_factors,
+                    {
+                        f_name: -utils.neg_log10_softmax(f_pred)
+                        for f_name, f_pred in factorised_predictions.items()},
+                    -utils.neg_log10_softmax(
+                        factorised_predictions["l_arg_nums"]),
+                    -utils.neg_log10_softmax(
+                        factorised_predictions["r_arg_nums"]),
+                    -utils.neg_log10_softmax(
+                        factorised_predictions["aux_positions"]),
+                    -utils.neg_log10_softmax(
+                        factorised_predictions["aux_rel_ids"]),
+                )
+            (
+                dev_sup_acc, dev_pos_acc, dev_arc_acc,
+                dev_deprel_acc, dev_factorised_accs) = (
                 get_accuracies(
                     writer, n_iter, args.tagging.use_tensorboard,
                     predictions, eval_labels,
                     pos_predictions, eval_pos_labels,
                     arc_predictions, eval_arc_labels,
-                    deprel_predictions_, eval_deprel_labels
+                    deprel_predictions_, eval_deprel_labels,
+                    factorised_predictions, eval_factorised_labels,
+                    f_supertag_scores=f_supertag_scores, printinfo=False,
                     )
             )
 
@@ -876,6 +1189,12 @@ def train_command(args: settings.Settings):
                         'deprel_acc/dev',
                         dev_deprel_acc, n_iter
                     )
+                for f_name, f_dev_acc in dev_factorised_accs.items():
+                    writer.add_scalar(
+                        f'{f_name}_acc/dev',
+                        f_dev_acc, n_iter,
+                    )
+                # add reporting of rebuilt factorised supertags
 
             combined_acc = 0
             if dev_sup_acc is not None:
@@ -886,226 +1205,40 @@ def train_command(args: settings.Settings):
                 combined_acc += dev_arc_acc
             if dev_deprel_acc is not None:
                 combined_acc += dev_deprel_acc
+            for f_dev_acc in dev_factorised_accs.values():
+                combined_acc += f_dev_acc
             combined_acc /= num_losses
 
-            # args.tagging.loss_ratio*dev_acc + (
-            # 1-args.tagging.loss_ratio)*dev_pos_acc
-            eval_metric: float
-            match args.tagging.eval_metric:
-                case "cacc":
-                    eval_metric = combined_acc
+            assert eval_labels is not None
+            eval_metric: float = get_eval_metric(
+                args.tagging.eval_metric,
+                args.tagging.factorised,
+                args.tagging.deprels_from_supertags,
+                combined_acc=combined_acc,
+                sup_predictions=predictions,
+                arc_predictions=arc_predictions,
+                pos_predictions=pos_predictions,
+                deprel_predictions=deprel_predictions,
+                factorised_predictions=factorised_predictions,
+                seen_supertag_scores=f_supertag_scores,
+                eval_sup_labels=eval_labels,
+                eval_arc_labels=eval_arc_labels,
+                eval_deprel_labels=eval_deprel_labels,
+                id2pos=id2pos,
+                id2deprel=id2deprel,
+                deprel2id=train_dataset.deprel_dict,
+                id2sup=id2sup,
+                sup2id=sup2id,
+                id2sup_relative=id2sup_relative,
+                valid_id2sup=valid_id2sup,
+                valid_id2sup_relative=valid_id2sup_relative,
+                valid_factors=valid_factors,
+                max_l=max_l,
+                max_r=max_r,
+                k_supertag=k_supertag,
+                k_head_scores=k_head_scores,
+            )
 
-                case "a*-las" | "a*-uas":
-                    assert arc_predictions is not None
-                    assert eval_arc_labels is not None
-                    assert predictions is not None
-                    assert pos_predictions is not None
-
-                    if epo > -1:
-                        head_preds_astar, deprel_preds_astar = parsing.chart(
-                            arc_predictions,
-                            eval_arc_labels,
-                            predictions,
-                            id2sup,
-                            id2pos,
-                            train_dataset.deprel_dict,
-                            pos_predictions.argmax(-1),
-                            max_l,
-                            max_r,
-                            root_sup_id=sup2id["*+root"],
-                            k_supertag=5,
-                            k_head_scores=5,
-                        )
-
-                        assert eval_deprel_labels is not None
-
-                        if args.tagging.eval_metric == "a*-las":
-                            assert deprel_predictions is not None
-
-                            # deprel_predictions: [B, D, H, L]
-                            # head_preds_astar:   [B, D]
-                            deprel_logits_astar = select_deprel_logits(
-                                deprel_predictions,
-                                head_preds_astar,
-                            )
-                            # [B, D, L]
-
-                            deprel_predictions_astar = (
-                                deprel_logits_astar.argmax(-1)
-                            )
-                            # [B, D]
-
-                            eval_metric = parsing.las(
-                                head_preds_astar,
-                                deprel_predictions_astar,
-                                eval_arc_labels,
-                                eval_deprel_labels,
-                            )
-
-                        else:  # a*-uas
-                            eval_metric = parsing.uas(
-                                head_preds_astar,
-                                eval_arc_labels,
-                            )
-
-                    else:
-                        eval_metric = 0
-                        tol = 99999
-
-                case "mst-las" | "mst-uas":
-                    assert arc_predictions is not None
-                    assert eval_arc_labels is not None
-
-                    mst = parsing.mst(
-                        arc_predictions,
-                        eval_arc_labels,
-                    )
-                    # mst: [B, D]
-
-                    if args.tagging.eval_metric == "mst-las":
-                        assert deprel_predictions is not None
-                        assert eval_deprel_labels is not None
-
-                        # deprel_predictions: [B, D, H, L]
-                        deprel_logits_mst = select_deprel_logits(
-                            deprel_predictions,
-                            mst,
-                        )
-                        # [B, D, L]
-
-                        deprel_predictions_mst = (
-                            deprel_logits_mst.argmax(-1)
-                        )
-                        # [B, D]
-
-                        eval_metric = parsing.las(
-                            mst,
-                            deprel_predictions_mst,
-                            eval_arc_labels,
-                            eval_deprel_labels,
-                        )
-
-                    else:  # mst-uas
-                        eval_metric = parsing.uas(
-                            mst,
-                            eval_arc_labels,
-                        )
-
-                case _:
-                    raise Exception(
-                        f"args.tagging.eval_metric "
-                        f"'{args.tagging.eval_metric}' unknown"
-                    )
-            # match args.tagging.eval_metric:
-            #     case "cacc":
-            #         eval_metric = combined_acc
-            #     case "a*-las" | "a*-uas":
-            #         # TODO: test the deprel reconstructor
-            #         # by giving the chart parser gold arc labels
-            #         # and gold supertag labels
-            #         assert arc_predictions is not None
-            #         assert eval_arc_labels is not None
-            #         assert predictions is not None
-            #         assert pos_predictions is not None
-            #         if epo > -1:
-            #             head_preds_astar, deprel_preds_astar = parsing.chart(
-            #                 arc_predictions, eval_arc_labels,
-            #                 predictions, id2sup, id2pos,
-            #                 train_dataset.deprel_dict,
-            #                 pos_predictions.argmax(-1),
-            #                 max_l, max_r,
-            #                 root_sup_id=sup2id["*+root"],
-            #                 k_supertag=5, k_head_scores=5
-            #             )
-            #             assert eval_deprel_labels is not None
-
-            #             if args.tagging.eval_metric == "a*-las":
-            #                 assert deprel_predictions is not None
-            #                 # deprel_predictions, [B, S, Slab, N]
-            #                 hds = head_preds_astar + (head_preds_astar < 0)
-            #                 # [B, S]
-            #                 hds = hds[..., np.newaxis, np.newaxis].repeat(
-            #                     deprel_predictions.shape[-1], axis=-1)
-            #                 # [B, S, 1, N]
-            #                 print(deprel_predictions.shape, hds.shape)
-
-            #                 deprel_predictions = np.take_along_axis(
-            #                     deprel_predictions, hds, axis=2)
-            #                 # [B, S, 1, N]
-            #                 deprel_predictions = np.squeeze(
-            #                     deprel_predictions, axis=2)
-            #                 # [B, S, N]
-            #                 deprel_predictions = deprel_predictions.argmax(-1)
-            #                 # [B, S]
-            #                 eval_metric = parsing.las(
-            #                     head_preds_astar, deprel_predictions,
-            #                     # deprel_preds_astar,
-            #                     eval_arc_labels, eval_deprel_labels,
-            #                     # eval_pos_labels,
-            #                     # train_dataset.pos_dict["PUNCT"]
-            #                 )
-            #             elif args.tagging.eval_metric == "a*-uas":
-            #                 eval_metric = parsing.uas(
-            #                     head_preds_astar, eval_arc_labels,
-            #                     # eval_pos_labels,
-            #                     # train_dataset.pos_dict["PUNCT"]
-            #                 )
-            #         else:
-            #             eval_metric = 0
-            #             tol = 99999
-
-            #     case "mst-las" | "mst-uas":
-            #         assert arc_predictions is not None
-            #         assert eval_arc_labels is not None
-
-            #         mst = parsing.mst(
-            #             arc_predictions, eval_arc_labels)
-            #         if args.tagging.eval_metric == "mst-las":
-            #             assert deprel_predictions is not None
-            #             assert eval_deprel_labels is not None
-
-            #             hds = mst + (mst < 0)
-            #             # [B, S]
-            #             hds = hds[..., np.newaxis, np.newaxis].repeat(
-            #                 deprel_predictions.shape[-1], axis=-1)
-            #             # [B, S, 1, N]
-
-            #             # deprel_predictions, [B, S, Slab, N]
-            #             deprel_predictions_mst = np.take_along_axis(
-            #                 deprel_predictions, hds, axis=2)
-            #             # [B, S, 1, N]
-            #             deprel_predictions_mst = np.squeeze(
-            #                 deprel_predictions_mst, axis=2)
-            #             # [B, S, N]
-            #             deprel_predictions_mst = deprel_predictions_mst.argmax(-1)
-            #             # [B, S]
-
-            #             # print("PUNCT:", train_dataset.pos_dict["PUNCT"])
-            #             eval_metric = parsing.las(
-            #                 mst, deprel_predictions_mst,
-            #                 eval_arc_labels, eval_deprel_labels,
-            #                 # eval_pos_labels, train_dataset.pos_dict["PUNCT"]
-            #             )
-            #             # TODO: implement punctuation ignore option
-            #         elif args.tagging.eval_metric == "mst-uas":
-            #             eval_metric = parsing.uas(
-            #                 mst, eval_arc_labels,
-            #                 # eval_pos_labels, train_dataset.pos_dict["PUNCT"]
-            #             )
-
-            #         # run mst, get heads
-            #         # (select deprels using mst heads)
-            #         # compute las/uas
-
-            #         # TODO: add las option for predicted deprel matrix or not
-            #         # then, select from matrix using predictions there
-            #     case _:
-            #         raise Exception(
-            #             f"args.tagging.eval_metric '{args.tagging.eval_metric}"
-            #             "' unknown")
-                # TODO: for arc scoring also supervise the root token.
-                # Achieve this by including the BOS token as the
-                # artificial root token
             writer.add_scalar(
                 f'{args.tagging.eval_metric}/dev', eval_metric, n_iter)
 
@@ -1117,6 +1250,8 @@ def train_command(args: settings.Settings):
                 logging.info("current deprel acc {}".format(dev_deprel_acc))
             if dev_sup_acc is not None:
                 logging.info("current supertag acc {}".format(dev_sup_acc))
+            for f_name, f_dev_acc in dev_factorised_accs.items():
+                logging.info("current {} acc {}".format(f_name, f_dev_acc))
             if dev_pos_acc is not None:
                 logging.info("eval metric {}".format(eval_metric))
             logging.info("last metric {}".format(last_metric))
@@ -1132,6 +1267,22 @@ def train_command(args: settings.Settings):
             _save_scheduler(
                 scheduler, pathlib.Path(
                     args.tagging.output_path), run_name)
+
+            print("pos mix:", torch.softmax(
+                model.pos_mix.weights, dim=0).tolist())
+            print("arc mix:", torch.softmax(
+                model.arc_mix.weights, dim=0).tolist())
+            print("rel mix:", torch.softmax(
+                model.rel_mix.weights, dim=0).tolist())
+            if model.sup_mix is not None:
+                print("sup mix:", torch.softmax(
+                    model.sup_mix.weights, dim=0).tolist())
+            if model.sup_arg_mix is not None:
+                print("sup arg mix:", torch.softmax(
+                    model.sup_arg_mix.weights, dim=0).tolist())
+            if model.sup_head_mix is not None:
+                print("sup head mix:", torch.softmax(
+                    model.sup_head_mix.weights, dim=0).tolist())
 
             # if dev_metrics.fscore > last_fscore or dev_loss < last...
             last_metric = eval_metric
@@ -1151,7 +1302,7 @@ def train_command(args: settings.Settings):
                 _finish_training(
                     model, sup2id, dev_dataloader,
                     dev_dataset, run_name, writer, args.tagging,
-                    n_iter)
+                    n_iter, args.tagging.factorised, seen_factors)
                 return
             # end of epoch
 
@@ -1165,7 +1316,8 @@ def train_command(args: settings.Settings):
 
     _finish_training(
         model, sup2id, dev_dataloader, dev_dataset,
-        run_name, writer, args.tagging, n_iter)
+        run_name, writer, args.tagging, n_iter,
+        args.tagging.factorised, seen_factors)
 
 
 def _save_model(
@@ -1219,32 +1371,58 @@ def _finish_training(
         run_name: str,
         writer: None | SummaryWriter,
         args: settings.TaggingSettings,
-        n_iter: int):
+        n_iter: int,
+        factorised: Literal[
+            "seen", "complete", "structural", False],
+        seen_factors: factorisation.SupertagFactors | None = None):
 
     (
         predictions, eval_labels,
         pos_predictions, eval_pos_labels,
         arc_predictions, eval_arc_labels,
         deprel_predictions, eval_deprel_labels,
+        factorised_predictions, eval_factorised_labels,
         *_) = (
         evaluate.predict(
             model, eval_dataloader, len(eval_dataset),
             len(sup2id), args.batch_size,
             device))
 
-    sup_acc, pos_acc, arc_acc, deprel_acc = (
+    f_supertag_scores = None
+    if factorised in ("seen", "complete"):
+        assert seen_factors is not None
+        f_supertag_scores = factorisation.score_supertags_batch(
+            seen_factors,
+            {
+                f_name: -utils.neg_log10_softmax(f_pred)
+                for f_name, f_pred in factorised_predictions.items()},
+            -utils.neg_log10_softmax(
+                factorised_predictions["l_arg_nums"]),
+            -utils.neg_log10_softmax(
+                factorised_predictions["r_arg_nums"]),
+            -utils.neg_log10_softmax(
+                factorised_predictions["aux_positions"]),
+            -utils.neg_log10_softmax(
+                factorised_predictions["aux_rel_ids"]),
+        )
+
+    sup_acc, pos_acc, arc_acc, deprel_acc, dev_factorised_accs = (
         get_accuracies(
             writer, n_iter, args.use_tensorboard,
             predictions, eval_labels,
             pos_predictions, eval_pos_labels,
             arc_predictions, eval_arc_labels,
-            deprel_predictions, eval_deprel_labels
+            deprel_predictions, eval_deprel_labels,
+            factorised_predictions, eval_factorised_labels,
+            f_supertag_scores,
+            printinfo=False
             )
     )
 
     register_run_metrics(
         writer, run_name,  # args.lr,
-        args.epochs, sup_acc, pos_acc, arc_acc, deprel_acc)
+        args.epochs, sup_acc, pos_acc, arc_acc, deprel_acc,
+        dev_factorised_accs)
 
 
 def evaluate_command(args: settings.Settings, k: int = 1):
@@ -1273,6 +1451,10 @@ def evaluate_command(args: settings.Settings, k: int = 1):
         prefix, pathlib.Path(args.tagging.tag_vocab_path)
     )
     id2sup = {i: sup for sup, i in sup2id.items()}
+    id2sup_relative = {
+        i: extraction.convert_string_to_relative_relation(tag)
+        for i, tag in id2sup.items()}
+
     id2relative_sup: dict[
         int, None | extraction.ProjectiveTag]
     id2relative_sup = {
@@ -1290,16 +1472,23 @@ def evaluate_command(args: settings.Settings, k: int = 1):
     logging.info("Preparing Data")
     eval_dataset, eval_dataloader = prepare_test_data(
         test_data, prefix, sup2id, args.tagging.model_path,
-        args.tagging.batch_size)
+        args.tagging.batch_size, args.tagging.factorised is not False)
+
+    id2pos = {
+        i: pos for pos, i in eval_dataset.pos_dict.items()}
+    id2deprel = {
+        i: deprel for deprel, i in eval_dataset.deprel_dict.items()}
 
     id2pos = {i: pos for pos, i in eval_dataset.pos_dict.items()}
 
     model = initialize_model(
         args.tagging.model_name, sup2id, args.tagging.model_path,
         num_pos_tags=len(eval_dataset.pos_dict),
-        num_deprel_tags=len(
-            eval_dataset.deprel_dict) if args.tagging.train_deprel else None,
-        train_arc=args.tagging.train_arc, train_sup=args.tagging.train_sup)
+        num_deprel_tags=len(eval_dataset.deprel_dict),
+        train_deprel=args.tagging.train_deprel,
+        train_arc=args.tagging.train_arc,
+        train_sup=args.tagging.train_sup,
+        factorised=args.tagging.factorised)
 
     assert model is not None
 
@@ -1309,11 +1498,48 @@ def evaluate_command(args: settings.Settings, k: int = 1):
                 args.tagging.output_path) / args.tagging.eval_model_name))
     model.to(device)
 
+    seen_factors = None
+    valid_factors = None
+    valid_supertag2id = None
+    valid_id2sup = None
+    valid_id2sup_relative = None
+    if args.tagging.factorised is not False:
+        if args.tagging.factorised in ("complete", "seen"):
+            seen_factors = factorisation.preprocess_supertags(
+                sup2id,
+                eval_dataset.deprel_dict,
+                max_l,
+                max_r,
+            )
+
+        if args.tagging.eval_metric.startswith("a*"):
+            # print(len(train_dataset.deprel_dict)); raise Exception
+            if args.tagging.factorised == "structural":
+                valid_supertag2id = (
+                    factorisation.generate_valid_structural_supertag2id(
+                        max_l=max_l,
+                        max_r=max_r,
+                        mode="projective",
+                    ))
+
+                valid_factors = factorisation.preprocess_supertags(
+                    valid_supertag2id,
+                    {"_": 0},
+                    max_l,
+                    max_r,
+                )
+                valid_id2sup = {
+                    i: sup for sup, i in valid_supertag2id.items()}
+                valid_id2sup_relative = {
+                    i: extraction.convert_string_to_relative_relation(tag)
+                    for i, tag in valid_id2sup.items()}
+
     (
         predictions, eval_labels,
         pos_predictions, eval_pos_labels,
         arc_predictions, eval_arc_labels,
         deprel_predictions, eval_deprel_labels,
+        factorised_predictions, eval_factorised_labels,
         *_) = (
         evaluate.predict(
             model, eval_dataloader, len(eval_dataset),
@@ -1321,25 +1547,6 @@ def evaluate_command(args: settings.Settings, k: int = 1):
             deprels_matrix=True)
         )
 
-    # deprel_predictions_ = deprel_predictions
-    # if (
-    #         deprel_predictions is not None
-    #         and eval_deprel_labels is not None):
-    #     assert eval_arc_labels is not None
-    #     hds = eval_arc_labels + (eval_arc_labels < 0)
-    #     # [B, S]
-    #     hds = hds[..., np.newaxis, np.newaxis].repeat(
-    #         deprel_predictions.shape[-1], axis=-1)
-    #     # [B, S, 1, N]
-
-    #     # deprel_predictions, [B, S, Slab, N]
-
-    #     deprel_predictions_ = np.take_along_axis(
-    #         deprel_predictions, hds, axis=2)
-    #     # [B, S, 1, N]
-    #     deprel_predictions_ = np.squeeze(
-    #         deprel_predictions_, axis=2)
-    #     # [B, S, N]
     deprel_predictions_ = deprel_predictions
 
     if (
@@ -1353,14 +1560,35 @@ def evaluate_command(args: settings.Settings, k: int = 1):
             eval_arc_labels,
         )
         # [B, D, L]
-    dev_sup_accs, dev_pos_accs, dev_arc_accs, dev_deprel_accs = (
+    f_supertag_scores = None
+    if args.tagging.factorised in ("seen", "complete"):
+        assert seen_factors is not None
+        f_supertag_scores = factorisation.score_supertags_batch(
+            seen_factors,
+            {
+                f_name: -utils.neg_log10_softmax(f_pred)
+                for f_name, f_pred in factorised_predictions.items()},
+            -utils.neg_log10_softmax(
+                factorised_predictions["l_arg_nums"]),
+            -utils.neg_log10_softmax(
+                factorised_predictions["r_arg_nums"]),
+            -utils.neg_log10_softmax(
+                factorised_predictions["aux_positions"]),
+            -utils.neg_log10_softmax(
+                factorised_predictions["aux_rel_ids"]),
+        )
+    (
+        dev_sup_accs, dev_pos_accs, dev_arc_accs,
+        dev_deprel_accs, dev_factorised_accs) = (
         get_accuracies(
             writer, 0, args.tagging.use_tensorboard,
             predictions, eval_labels,
             pos_predictions, eval_pos_labels,
             arc_predictions, eval_arc_labels,
             deprel_predictions_, eval_deprel_labels,
-            k=k
+            factorised_predictions, eval_factorised_labels,
+            f_supertag_scores,
+            k=k, printinfo=False
             )
     )
     if k > 1:
@@ -1377,9 +1605,11 @@ def evaluate_command(args: settings.Settings, k: int = 1):
             if dev_deprel_accs is not None:
                 print(
                     f"deprel_acc k={k}:", dev_deprel_accs[k-1])
+            for f_name, f_dev_accs in dev_factorised_accs.items():
+                print(
+                    f"{f_name}_acc k={k}:", f_dev_accs[k-1]
+                )
 
-            # args.tagging.loss_ratio*dev_acc + (
-            # 1-args.tagging.loss_ratio)*dev_pos_acc
     else:
         if dev_sup_accs is not None:
             print(
@@ -1393,210 +1623,39 @@ def evaluate_command(args: settings.Settings, k: int = 1):
         if dev_deprel_accs is not None:
             print(
                 f"deprel_acc k={k}:", dev_deprel_accs)
+        for f_name, f_dev_accs in dev_factorised_accs.items():
+            print(
+                f"{f_name}_acc k={k}:", f_dev_accs)
 
-    eval_metric: float
-    match args.tagging.eval_metric:
-        case "cacc":
-            pass  # TODO: maybe compute this...
+    eval_metric: float = get_eval_metric(
+        args.tagging.eval_metric,
+        args.tagging.factorised,
+        args.tagging.deprels_from_supertags,
+        combined_acc=0,
+        sup_predictions=predictions,
+        arc_predictions=arc_predictions,
+        pos_predictions=pos_predictions,
+        deprel_predictions=deprel_predictions,
+        factorised_predictions=factorised_predictions,
+        seen_supertag_scores=f_supertag_scores,
+        eval_sup_labels=eval_labels,
+        eval_arc_labels=eval_arc_labels,
+        eval_deprel_labels=eval_deprel_labels,
+        id2pos=id2pos,
+        id2deprel=id2deprel,
+        deprel2id=eval_dataset.deprel_dict,
+        id2sup=id2sup,
+        sup2id=sup2id,
+        id2sup_relative=id2sup_relative,
+        valid_id2sup=valid_id2sup,
+        valid_id2sup_relative=valid_id2sup_relative,
+        valid_factors=valid_factors,
+        max_l=max_l,
+        max_r=max_r,
+        k_supertag=args.tagging.k_supertag,
+        k_head_scores=args.tagging.k_head_scores,
+    )
 
-        case "a*-las" | "a*-uas":
-            assert arc_predictions is not None
-            assert eval_arc_labels is not None
-            assert predictions is not None
-            assert pos_predictions is not None
-
-            head_preds_astar, deprel_preds_astar = parsing.chart(
-                arc_predictions,
-                eval_arc_labels,
-                predictions,
-                id2sup,
-                id2pos,
-                eval_dataset.deprel_dict,
-                pos_predictions.argmax(-1),
-                max_l,
-                max_r,
-                root_sup_id=sup2id["*+root"],
-                k_supertag=20,
-                k_head_scores=20,
-            )
-
-            if args.tagging.eval_metric == "a*-las":
-                assert deprel_predictions is not None
-                assert eval_deprel_labels is not None
-
-                # deprel_predictions: [B, D, H, L]
-                # head_preds_astar:   [B, D]
-                deprel_logits_astar = select_deprel_logits(
-                    deprel_predictions,
-                    head_preds_astar,
-                )
-                # [B, D, L]
-
-                deprel_predictions_astar = (
-                    deprel_logits_astar.argmax(-1)
-                )
-                # [B, D]
-
-                eval_metric = parsing.las(
-                    head_preds_astar,
-                    deprel_predictions_astar,
-                    eval_arc_labels,
-                    eval_deprel_labels,
-                )
-
-            else:  # a*-uas
-                eval_metric = parsing.uas(
-                    head_preds_astar,
-                    eval_arc_labels,
-                )
-
-        case "mst-las" | "mst-uas":
-            assert arc_predictions is not None
-            assert eval_arc_labels is not None
-
-            mst = parsing.mst(
-                arc_predictions,
-                eval_arc_labels,
-            )
-            # [B, D]
-
-            if args.tagging.eval_metric == "mst-las":
-                assert deprel_predictions is not None
-                assert eval_deprel_labels is not None
-
-                # Select relation logits corresponding to the MST heads.
-                deprel_logits_mst = select_deprel_logits(
-                    deprel_predictions,
-                    mst,
-                )
-                # [B, D, L]
-
-                deprel_predictions_mst = (
-                    deprel_logits_mst.argmax(-1)
-                )
-                # [B, D]
-
-                eval_metric = parsing.las(
-                    mst,
-                    deprel_predictions_mst,
-                    eval_arc_labels,
-                    eval_deprel_labels,
-                )
-
-            else:  # mst-uas
-                eval_metric = parsing.uas(
-                    mst,
-                    eval_arc_labels,
-                )
-
-        case _:
-            raise Exception(
-                f"args.tagging.eval_metric "
-                f"'{args.tagging.eval_metric}' unknown"
-            )
-    # match args.tagging.eval_metric:
-    #     case "cacc":
-    #         pass  # TODO: maybe compute this...
-    #     case "a*-las" | "a*-uas":
-    #         assert arc_predictions is not None
-    #         assert eval_arc_labels is not None
-    #         assert predictions is not None
-    #         assert pos_predictions is not None
-    #         head_preds_astar, deprel_preds_astar = parsing.chart(
-    #             arc_predictions, eval_arc_labels,
-    #             predictions, id2sup, id2pos,
-    #             eval_dataset.deprel_dict,
-    #             pos_predictions.argmax(-1),
-    #             max_l, max_r,
-    #             root_sup_id=sup2id["*+root"],
-    #             k_supertag=20, k_head_scores=20
-    #         )
-    #         # TODO: need to limit size of sentences?
-
-    #         if args.tagging.eval_metric == "a*-las":
-    #             assert deprel_predictions is not None
-
-    #             hds = head_preds_astar + (head_preds_astar < 0)
-    #             # [B, S]
-    #             hds = hds[..., np.newaxis, np.newaxis].repeat(
-    #                 deprel_predictions.shape[-1], axis=-1)
-    #             # [B, S, 1, N]
-
-    #             # deprel_predictions, [B, S, Slab, N]
-
-    #             deprel_predictions = np.take_along_axis(
-    #                 deprel_predictions, hds, axis=2)
-    #             # [B, S, 1, N]
-    #             deprel_predictions = np.squeeze(
-    #                 deprel_predictions, axis=2)
-    #             # [B, S, N]
-    #             deprel_predictions = deprel_predictions.argmax(-1)
-    #             # [B, S]
-    #             eval_metric = parsing.las(
-    #                 head_preds_astar, deprel_predictions,
-    #                 # deprel_preds_astar,
-    #                 eval_arc_labels,
-    #                 eval_deprel_labels,
-    #                 # eval_pos_labels,
-    #                 # train_dataset.pos_dict["PUNCT"]
-    #             )
-    #         elif args.tagging.eval_metric == "a*-uas":
-    #             eval_metric = parsing.uas(
-    #                 head_preds_astar, eval_arc_labels,
-    #                 # eval_pos_labels,
-    #                 # train_dataset.pos_dict["PUNCT"]
-    #             )
-
-    #     case "mst-las" | "mst-uas":
-    #         assert arc_predictions is not None
-    #         assert eval_arc_labels is not None
-
-    #         mst = parsing.mst(
-    #             arc_predictions, eval_arc_labels)
-    #         if args.tagging.eval_metric == "mst-las":
-    #             assert deprel_predictions is not None
-    #             assert eval_deprel_labels is not None
-
-    #             hds = mst + (mst < 0)
-    #             # [B, S]
-    #             hds = hds[..., np.newaxis, np.newaxis].repeat(
-    #                 deprel_predictions.shape[-1], axis=-1)
-    #             # [B, S, 1, N]
-
-    #             # deprel_predictions, [B, S, Slab, N]
-
-    #             deprel_predictions_mst = np.take_along_axis(
-    #                 deprel_predictions, hds, axis=2)
-    #             # [B, S, 1, N]
-    #             deprel_predictions_mst = np.squeeze(
-    #                 deprel_predictions_mst, axis=2)
-    #             # [B, S, N]
-    #             deprel_predictions_mst = deprel_predictions_mst.argmax(-1)
-    #             # [B, S]
-
-    #             # print("PUNCT:", eval_dataset.pos_dict["PUNCT"])
-    #             eval_metric = parsing.las(
-    #                 mst, deprel_predictions_mst,
-    #                 eval_arc_labels, eval_deprel_labels,
-    #                 # eval_pos_labels, eval_dataset.pos_dict["PUNCT"]
-    #             )
-    #             # TODO: implement punctuation ignore option
-    #         if args.tagging.eval_metric == "mst-uas":
-    #             eval_metric = parsing.uas(
-    #                 mst, eval_arc_labels,
-    #                 # eval_pos_labels, eval_dataset.pos_dict["PUNCT"]
-    #             )
-
-    #         # run mst, get heads
-    #         # (select deprels using mst heads)
-    #         # compute las/uas
-
-    #         # TODO: add las option for predicted deprel matrix or not
-    #         # then, select from matrix using predictions there
-    #     case _:
-    #         raise Exception(
-    #             f"args.tagging.eval_metric '{args.tagging.eval_metric}"
-    #             "' unknown")
     print(
         f"eval metric {args.tagging.eval_metric}:", eval_metric)
 
@@ -1632,14 +1691,15 @@ def predict_command(args: settings.Settings):
     logging.info("Preparing Data")
     pred_dataset, pred_dataloader = prepare_test_data(
         pred_data, prefix, sup2id, args.tagging.model_path,
-        args.tagging.batch_size)
+        args.tagging.batch_size, args.tagging.factorised is not False)
 
     model = initialize_model(
         args.tagging.model_name, sup2id, args.tagging.model_path,
         num_pos_tags=len(pred_dataset.pos_dict),
         num_deprel_tags=len(
             pred_dataset.deprel_dict) if args.tagging.train_deprel else None,
-        train_arc=args.tagging.train_arc, train_sup=args.tagging.train_sup)
+        train_arc=args.tagging.train_arc, train_sup=args.tagging.train_sup,
+        factorised=args.tagging.factorised)
     assert model is not None
 
     model.load_state_dict(
@@ -1653,6 +1713,7 @@ def predict_command(args: settings.Settings):
         pos_predictions, _,
         arc_predictions, _,
         deprel_predictions, _,
+        factorised_predictions, _,
         *_) = (
         evaluate.predict(
             model, pred_dataloader, len(pred_dataset),

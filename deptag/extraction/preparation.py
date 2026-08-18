@@ -41,7 +41,7 @@ def prepare_train(
                 sup, word["head"], word["deprel"]))
 
             if sup not in sup2id:
-                sup2id[sup] = len(sup2id)+1
+                sup2id[sup] = len(sup2id)  # +1
 
         sents.append(sent)
 

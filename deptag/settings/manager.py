@@ -91,6 +91,11 @@ def load_settings(
         sett.deprels
     )
 
+    if hasattr(sett, "tagging"):
+        validation.assert_tagging_settings(
+            sett.tagging
+        )
+
     validation.assert_dep_standard(
         sett.deprels, stan,
         allow_partial_underspecification=(

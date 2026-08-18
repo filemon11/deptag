@@ -10,8 +10,11 @@ def calc_loss_helper(
     # shape: (batch_size, seq_len, num_tags) -> (batch_size, num_tags, seq_len)
     logits = torch.movedim(logits, -1, 1)
 
-    loss = F.cross_entropy(
-        logits, labels, ignore_index=-1, reduction="mean")
+    if (labels != -1).any().item():
+        loss = F.cross_entropy(
+            logits, labels, ignore_index=-1, reduction="mean")
+    else:
+        loss = torch.tensor(0, dtype=logits.dtype, device=logits.device)
 
     if printinfo:
         logits_wo_ignore = logits.transpose(-1, -2)[labels != -1]

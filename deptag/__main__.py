@@ -202,7 +202,7 @@ def extract_func(sett: settings.ExtractSettings):
     for corpus in (
             "Bulgarian-BTB",
             "Catalan-AnCora",
-            "Czech-PDTC",
+            "Czech-PDT",
             "German-GSD",
             "English-EWT",
             "Spanish-AnCora",

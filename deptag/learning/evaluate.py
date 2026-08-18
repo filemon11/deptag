@@ -3,8 +3,9 @@ import torch
 import logging
 import tqdm
 
+from collections import defaultdict
 
-from typing import overload, Literal
+from typing import overload, Literal, DefaultDict
 
 
 @overload
@@ -17,9 +18,11 @@ def predict(
             np.ndarray | None, np.ndarray | None,
             np.ndarray | None, np.ndarray | None,
             np.ndarray | None, np.ndarray | None,
+            dict[str, np.ndarray], dict[str, np.ndarray],
             np.ndarray,
             np.ndarray | None, np.ndarray | None,
-            np.ndarray | None, np.ndarray | None]:
+            np.ndarray | None, np.ndarray | None,
+            dict[str, np.ndarray]]:
     ...
 
 
@@ -33,9 +36,11 @@ def predict(
             np.ndarray | None, np.ndarray | None,
             np.ndarray | None, np.ndarray | None,
             np.ndarray | None, np.ndarray | None,
+            dict[str, np.ndarray], dict[str, np.ndarray],
             None,
             None, None,
-            None, None]:
+            None, None,
+            dict[str, np.ndarray]]:
     ...
 
 
@@ -48,14 +53,17 @@ def predict(
             np.ndarray | None, np.ndarray | None,
             np.ndarray | None, np.ndarray | None,
             np.ndarray | None, np.ndarray | None,
+            dict[str, np.ndarray], dict[str, np.ndarray],
             np.ndarray | None,
             np.ndarray | None, np.ndarray | None,
-            np.ndarray | None, np.ndarray | None]:
+            np.ndarray | None, np.ndarray | None,
+            dict[str, np.ndarray]]:
 
     model.eval()
     predictions = []
     eval_labels = []
     max_len = 0
+    max_parse_len = 0
     idx = 0
 
     pos_predictions = []
@@ -64,11 +72,16 @@ def predict(
     eval_heads = []
     deprel_predictions = []
     eval_deprel_labels = []
+    factorised_predictions: DefaultDict[
+        str, list[np.ndarray]] = defaultdict(list)
+    eval_factorised_labels: DefaultDict[
+        str, list[np.ndarray]] = defaultdict(list)
 
     sup_losses: None | list[np.ndarray] | np.ndarray = []
     pos_losses: None | list[np.ndarray] | np.ndarray = []
     arc_losses: None | list[np.ndarray] | np.ndarray = []
     deprel_losses: None | list[np.ndarray] | np.ndarray = []
+    factorised_losses: DefaultDict[str, list[np.ndarray]] = defaultdict(list)
     for batch in tqdm.tqdm(eval_dataloader):
         batch = {k: v.to(device) for k, v in batch.items()}
 
@@ -85,8 +98,8 @@ def predict(
             logits = outputs[1].float().cpu().numpy()
             max_len = max(max_len, logits.shape[1])
             predictions.append(logits)
-            labels = batch['labels'].int().cpu().numpy()
-            eval_labels.append(labels)
+        labels = batch['labels'].int().cpu().numpy()
+        eval_labels.append(labels)
 
         if outputs[3] is not None:
             pos_logits = outputs[3].float().cpu().numpy()
@@ -94,24 +107,6 @@ def predict(
             max_len = max(max_len, pos_logits.shape[1])
             pos_labels = batch['pos_ids'].int().cpu().numpy()
             eval_pos_labels.append(pos_labels)
-
-        # if outputs[5] is not None:
-        #     # [batch, sent_len (head preds), sent_len]
-        #     # outputs[5][:, 1:][batch['heads'][:, 1:] == -1] = float("-inf")
-        #     valid_head = batch['heads'].ne(-1).clone()
-        #     valid_head[:, 0] = True
-        #     arc_logits = outputs[5].masked_fill(
-        #         ~valid_head.unsqueeze(-1),  # [batch, candidate_head, 1]
-        #         float("-inf"),
-        #     )
-        #     # set impossible likelihood to predicted heads that are masked
-
-        #     arc_logits = arc_logits.transpose(-1, -2).float().cpu().numpy()
-        #     # [batch, sent_len, sent_len (head preds)]
-        #     arc_predictions.append(arc_logits)
-        #     max_len = max(max_len, arc_logits.shape[1])
-        #     heads = batch['heads'].int().cpu().numpy()
-        #     eval_heads.append(heads)
 
         pred_heads = None
         parse_mask = None
@@ -167,8 +162,8 @@ def predict(
 
             arc_predictions.append(arc_logits_np)
 
-            max_len = max(
-                max_len,
+            max_parse_len = max(
+                max_parse_len,
                 arc_logits_np.shape[1],
             )
 
@@ -207,7 +202,12 @@ def predict(
         #     if deprels_matrix:
         #         deprel_predictions.append(
         #             outputs[7].permute(0, 3, 2, 1).float().cpu().numpy())
-        #     else:
+        #     else:        if outputs[3] is not None:
+            pos_logits = outputs[3].float().cpu().numpy()
+            pos_predictions.append(pos_logits)
+            max_len = max(max_len, pos_logits.shape[1])
+            pos_labels = batch['pos_ids'].int().cpu().numpy()
+            eval_pos_labels.append(pos_labels)
         #         # heads with index -1 are padding and are treated as
         #         # index 0 here (to be disregarded later)
         #         # print(heads[1])
@@ -289,8 +289,8 @@ def predict(
                 deprel_logits = deprel_logits.transpose(-1, -2)
                 # [B, D, L]
 
-                max_len = max(
-                    max_len,
+                max_parse_len = max(
+                    max_parse_len,
                     deprel_logits.shape[1],
                 )
 
@@ -317,6 +317,14 @@ def predict(
         # deprel_labels = batch['deprel_ids'].int().cpu().numpy()
         # eval_deprel_labels.append(deprel_labels)
 
+        for f_name, f_logits in outputs[9].items():
+            f_logits = f_logits.float().cpu().numpy()
+            factorised_predictions[f_name].append(f_logits)
+            max_len = max(max_len, f_logits.shape[1])
+            f_labels = batch[f_name].int().cpu().numpy()
+            eval_factorised_labels[f_name].append(f_labels)
+
+        # losses
         if outputs[0] is not None:
             assert isinstance(sup_losses, list)
             sup_losses.append(outputs[0].cpu().numpy())
@@ -333,19 +341,26 @@ def predict(
             assert isinstance(deprel_losses, list)
             deprel_losses.append(outputs[6].cpu().numpy())
 
+        if outputs[8] is not None:
+            for f_name, f_loss in outputs[8].items():
+                factorised_losses[f_name].append(f_loss.cpu().numpy())
+
     if len(predictions) > 0:
         predictions_ = np.concatenate([
             np.pad(
                 logits, ((0, 0), (0, max_len - logits.shape[1]), (0, 0)),
                 'constant', constant_values=0)
             for logits in predictions], axis=0)
+    else:
+        predictions_ = None
+
+    if len(eval_labels) > 0:
         eval_labels_ = np.concatenate([
             np.pad(
                 labels, ((0, 0), (0, max_len - labels.shape[1])),
                 'constant', constant_values=-1)
             for labels in eval_labels], axis=0)
     else:
-        predictions_ = None
         eval_labels_ = None
 
     if len(pos_predictions) > 0:
@@ -370,13 +385,13 @@ def predict(
                 arc_logits,
                 (
                     (0, 0),
-                    (0, max_len - arc_logits.shape[1]),
-                    (0, max_len - arc_logits.shape[2])),
+                    (0, max_parse_len - arc_logits.shape[1]),
+                    (0, max_parse_len - arc_logits.shape[2])),
                 'constant', constant_values=-np.inf)
             for arc_logits in arc_predictions], axis=0)
         eval_heads_ = np.concatenate([
             np.pad(
-                heads, ((0, 0), (0, max_len - heads.shape[1])),
+                heads, ((0, 0), (0, max_parse_len - heads.shape[1])),
                 'constant', constant_values=-1)
             for heads in eval_heads], axis=0)
     else:
@@ -390,8 +405,8 @@ def predict(
                     deprel_logits,
                     (
                         (0, 0),
-                        (0, max_len - deprel_logits.shape[1]),
-                        (0, max_len - deprel_logits.shape[2]),
+                        (0, max_parse_len - deprel_logits.shape[1]),
+                        (0, max_parse_len - deprel_logits.shape[2]),
                         (0, 0)),
                     'constant', constant_values=-np.inf)
                 for deprel_logits in deprel_predictions], axis=0)
@@ -399,7 +414,7 @@ def predict(
             deprel_predictions_ = np.concatenate([
                 np.pad(
                     deprel_logits,
-                    ((0, 0), (0, max_len - deprel_logits.shape[1]), (0, 0)),
+                    ((0, 0), (0, max_parse_len - deprel_logits.shape[1]), (0, 0)),
                     'constant', constant_values=0)
                 for deprel_logits in deprel_predictions], axis=0)
     else:
@@ -408,11 +423,26 @@ def predict(
     if len(eval_deprel_labels) > 0: 
         eval_deprel_labels_ = np.concatenate([
             np.pad(
-                deprel_labels, ((0, 0), (0, max_len - deprel_labels.shape[1])),
+                deprel_labels,
+                ((0, 0), (0, max_parse_len - deprel_labels.shape[1])),
                 'constant', constant_values=-1)
             for deprel_labels in eval_deprel_labels], axis=0)
     else:
         eval_deprel_labels_ = None
+
+    factorised_predictions_: dict[str, np.ndarray] = dict()
+    eval_factorised_labels_: dict[str, np.ndarray] = dict()
+    for f_name, f_predictions in factorised_predictions.items():
+        factorised_predictions_[f_name] = np.concatenate([
+            np.pad(
+                logits, ((0, 0), (0, max_len - logits.shape[1]), (0, 0)),
+                'constant', constant_values=0)
+            for logits in f_predictions], axis=0)
+        eval_factorised_labels_[f_name] = np.concatenate([
+            np.pad(
+                labels, ((0, 0), (0, max_len - labels.shape[1])),
+                'constant', constant_values=-1)
+            for labels in eval_factorised_labels[f_name]], axis=0)
 
     losses = 0
     num_losses = 0
@@ -444,22 +474,31 @@ def predict(
     else:
         deprel_losses = None
 
+    factorised_losses_: dict[str, np.ndarray] = dict()
+    for f_name, f_losses in factorised_losses.items():
+        factorised_losses_[f_name] = sum(f_losses)/len(f_losses)
+        losses += factorised_losses_[f_name]
+        num_losses += 1
+
     return (
         predictions_, eval_labels_,
         pos_predictions_, eval_pos_labels_,
         arc_predictions_, eval_heads_,
         deprel_predictions_, eval_deprel_labels_,
-        losses, sup_losses, pos_losses, arc_losses, deprel_losses)
+        factorised_predictions_, eval_factorised_labels_,
+        losses, sup_losses, pos_losses, arc_losses, deprel_losses,
+        factorised_losses_)
 
 
 def calc_tag_accuracy(
         predictions, eval_labels, writer, use_tensorboard, step: int,
-        typ: Literal["pos", "sup", "arc", "deprel"] = "sup"
+        typ: Literal["pos", "sup", "arc", "deprel"] = "sup",
+        printinfo: bool = True,
         ) -> float:
 
     acc = calc_tag_accuracy_k(
         predictions, eval_labels, writer, use_tensorboard, step, k=1,
-        typ=typ
+        typ=typ, printinfo=printinfo
     )
     if use_tensorboard:
         label = ""
@@ -483,7 +522,8 @@ def calc_tag_accuracy(
 def calc_tag_accuracy_k(
         predictions, eval_labels, writer, use_tensorboard,
         step: int, k: int = 1,
-        typ: Literal["sup", "pos", "arc", "deprel"] = "sup",
+        typ: Literal["sup", "pos", "arc", "deprel"] | str = "sup",
+        printinfo: bool = True,
         ) -> float:
 
     if k == 1:
@@ -502,16 +542,19 @@ def calc_tag_accuracy_k(
 
         acc = (predictions == eval_labels[..., None]).any(-1).mean()
 
-    label = ""
-    if typ == "pos":
-        label = 'pos_tags_accuracy'
-    elif typ == "sup":
-        label = 'sup_tags_accuracy'
-    elif typ == "arc":
-        label = 'arc_accuracy'
-    elif typ == "deprel":
-        label = 'deprel_accuracy'
-    logging.info('{} {} best: {}'.format(label, k, acc))
+    if printinfo:
+        label = ""
+        if typ == "pos":
+            label = 'pos_tags_accuracy'
+        elif typ == "sup":
+            label = 'sup_tags_accuracy'
+        elif typ == "arc":
+            label = 'arc_accuracy'
+        elif typ == "deprel":
+            label = 'deprel_accuracy'
+        else:
+            label = f"{typ}_accuracy"
+        logging.info('{} {} best: {}'.format(label, k, acc))
 
     return acc
 
@@ -520,11 +563,12 @@ def calc_tag_accuracy_upto_k(
             predictions, eval_labels, writer, use_tensorboard,
             step: int, k: int = 1,
             typ: Literal["sup", "pos", "arc", "deprel"] = "sup",
+            printinfo: bool = True,
         ) -> list[float]:
     accs = [
         calc_tag_accuracy_k(
             predictions, eval_labels, writer, use_tensorboard, step, k=m,
-            typ=typ
+            typ=typ, printinfo=printinfo
         )
         for m in range(1, k+1)
     ]

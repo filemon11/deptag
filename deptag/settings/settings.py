@@ -62,6 +62,11 @@ class TaggingSettings:
     mode: Literal["init", "continue", "add"] = "init"
     eval_metric: Literal[
         "cacc", "mst-las", "mst-uas", "a*-las", "a*-uas"] = "cacc"
+    factorised: Literal[
+        "structural", "complete", "seen", False] = False
+    deprels_from_supertags: bool = False
+    k_supertag: int = 5
+    k_head_scores: int = 5
 
 
 @dataclasses.dataclass(frozen=True)

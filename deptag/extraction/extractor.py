@@ -697,7 +697,7 @@ def process_relative_tag_to_projective(
         auxdep = args[0][1]
         args = args[1:]
     if not args[-1][0] and args[-1][0] is not None:
-        assert aux == "-", "Found supertag with two adjunction nodess."
+        assert aux == "-", "Found supertag with two adjunction nodes."
         aux = ">"
         auxdep = args[-1][1]
         args = args[:-1]
@@ -717,6 +717,46 @@ def process_relative_tag_to_projective(
             else:
                 return None
     return l_args, r_args, aux, auxdep
+
+
+def convert_relative_tag_to_factorised(
+        supertag: RelativeTag,
+        ) -> tuple[int, list[str], int, list[str], int | None, str | None]:
+    l_args: list[str] = []
+    r_args: list[str] = []
+    aux_rel: str | None = None
+    aux_position: int | None = None
+    aux_is_left: bool | None = None
+
+    check_left: bool = True
+
+    args = list(supertag)
+
+    for num, (typ, dep) in enumerate(args):
+        if typ is None:
+            check_left = False
+        elif check_left:
+            if typ:
+                l_args.append(dep)
+            else:
+                aux_rel = dep
+                aux_position = num
+                aux_is_left = True
+        else:
+            if typ:
+                r_args.append(dep)
+            else:
+                aux_rel = dep
+                aux_position = num
+                aux_is_left = False
+
+    if aux_position is not None:
+        if aux_is_left:
+            aux_position = aux_position - len(l_args) - 1
+        else:
+            aux_position = aux_position - len(l_args)
+
+    return len(l_args), l_args, len(r_args), r_args, aux_position, aux_rel
 
 
 def get_lr_argnum(tag: ProjectiveTag) -> tuple[int, int]:

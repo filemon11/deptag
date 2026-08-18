@@ -7,6 +7,8 @@ from . import losses, biaffine
 
 from transformers import AutoModel, BertModel
 
+from typing import Literal
+
 
 class LayerMix(nn.Module):
     # Proposed by https://aclanthology.org/D19-1279.pdf ?
@@ -56,6 +58,13 @@ class ModelForTagging(nn.Module):
         self.encoder: BertModel = AutoModel.from_pretrained(
             self.model_path, config=config)
 
+        self.factorised: Literal[
+            'structural', 'complete',
+            'seen', False] = config.task_specific_params[
+                'factorised']
+        self.max_l: None | int = config.task_specific_params['max_l']
+        self.max_r: None | int = config.task_specific_params['max_r']
+
         import transformers.utils.output_capturing as hf_output_capturing
 
         hf_output_capturing.torch = torch
@@ -82,9 +91,17 @@ class ModelForTagging(nn.Module):
         # self.supertag_layer = config.task_specific_params["supertag_layer"]
         # self.parse_layer = config.task_specific_params["parse_layer"]
         self.pos_mix = LayerMix(config.num_hidden_layers)
-        self.sup_mix = LayerMix(config.num_hidden_layers)
         self.arc_mix = LayerMix(config.num_hidden_layers)
         self.rel_mix = LayerMix(config.num_hidden_layers)
+
+        self.sup_mix = None
+        self.sup_arg_mix = None
+        self.sup_head_mix = None
+        if self.factorised is not False:
+            self.sup_arg_mix = LayerMix(config.num_hidden_layers)
+            self.sup_head_mix = LayerMix(config.num_hidden_layers)
+        else:
+            self.sup_mix = LayerMix(config.num_hidden_layers)
 
         # self.input_projection_parse = nn.Linear(
         #     transformer_input_dim, config.hidden_size)
@@ -115,14 +132,42 @@ class ModelForTagging(nn.Module):
                 num_layers=config.task_specific_params["transformer_layers"],
             )
 
-        self.dropout = nn.Dropout(self.dropout_rate)
-        self.projection = None
-        if self.train_sup:
-            self.projection = nn.Sequential(
+        def get_sequential(out_dim: int) -> nn.Sequential:
+            return nn.Sequential(
                 nn.Linear(transformer_input_dim, config.hidden_size),
                 nn.GELU(),
                 nn.Dropout(self.dropout_rate),
-                nn.Linear(config.hidden_size, config.num_labels))
+                nn.Linear(config.hidden_size, out_dim))
+
+        self.dropout = nn.Dropout(self.dropout_rate)
+        self.projection = None
+        self.left_labels_projection = None
+        self.right_labels_projections = None
+        if self.train_sup:
+            if self.factorised is not False:
+                assert self.max_l is not None and self.max_r is not None
+                self.l_num_projection = get_sequential(self.max_l + 1)
+                self.r_num_projection = get_sequential(self.max_r + 1)
+                if self.factorised in ("complete", "seen"):
+                    self.left_labels_projections = nn.ModuleList([
+                        get_sequential(
+                            config.task_specific_params["deprel_num"])
+                        for _ in range(self.max_l)
+                    ])
+
+                    self.right_labels_projections = nn.ModuleList([
+                        get_sequential(
+                            config.task_specific_params["deprel_num"])
+                        for _ in range(self.max_r)
+                    ])
+                    self.aux_label_projection = get_sequential(
+                        config.task_specific_params["deprel_num"])
+
+                self.aux_position_projection = get_sequential(
+                    self.max_l + self.max_r + 3)
+            else:
+                self.projection = get_sequential(
+                    config.num_labels)
             # self.projection = nn.Sequential(
             #     nn.Linear(config.hidden_size, config.num_labels))
         self.pos_projection = None
@@ -130,11 +175,7 @@ class ModelForTagging(nn.Module):
             # self.pos_projection = nn.Sequential(
             #     nn.Linear(config.hidden_size, self.num_pos_tags)
             # )
-            self.pos_projection = nn.Sequential(
-                nn.Linear(transformer_input_dim, config.hidden_size),
-                nn.GELU(),
-                nn.Dropout(self.dropout_rate),
-                nn.Linear(config.hidden_size, self.num_pos_tags))
+            self.pos_projection = get_sequential(self.num_pos_tags)
 
         self.biaffine = None
         self.root_arc = None
@@ -171,8 +212,13 @@ class ModelForTagging(nn.Module):
             heads=None,
             deprel_ids=None,
             output_attentions=None,
+            l_arg_nums=None,
+            r_arg_nums=None,
+            aux_rel_ids=None,
+            aux_positions=None,
             report_loss: bool = False,
             printinfo: bool = False,
+            **kwargs,
     ):
         outputs = self.encoder(
             input_ids,
@@ -186,7 +232,15 @@ class ModelForTagging(nn.Module):
         # token_repr_parse = outputs["hidden_states"][self.parse_layer]
         token_repr_arc = self.arc_mix(outputs["hidden_states"])
         token_repr_rel = self.rel_mix(outputs["hidden_states"])
-        token_repr_sup = self.sup_mix(outputs["hidden_states"])
+
+        token_repr_sup = None
+        token_repr_sup_arg = None
+        token_repr_sup_head = None
+        if self.factorised is not False:
+            token_repr_sup_arg = self.sup_arg_mix(outputs["hidden_states"])
+            token_repr_sup_head = self.sup_head_mix(outputs["hidden_states"])
+        else:
+            token_repr_sup = self.sup_mix(outputs["hidden_states"])
         token_repr_pos = self.pos_mix(outputs["hidden_states"])
         # print(num_layers, round(num_layers*(2/3)), round(num_layers*(1/3)))
 
@@ -204,12 +258,31 @@ class ModelForTagging(nn.Module):
             )
         )
 
-        word_repr_sup, _ = (
-            self._gather_word_representations(
-                token_repr_sup,
-                word_end_positions,
+        word_repr_sup = None
+        word_repr_sup_arg = None
+        word_repr_sup_head = None
+
+        if self.factorised is not False:
+            assert token_repr_sup_arg is not None
+            word_repr_sup_arg, _ = (
+                self._gather_word_representations(
+                    token_repr_sup_arg,
+                    word_end_positions,
+                )
             )
-        )
+            word_repr_sup_head, _ = (
+                self._gather_word_representations(
+                    token_repr_sup_head,
+                    word_end_positions,
+                )
+            )
+        else:
+            word_repr_sup, _ = (
+                self._gather_word_representations(
+                    token_repr_sup,
+                    word_end_positions,
+                )
+            )
 
         word_repr_pos, _ = (
             self._gather_word_representations(
@@ -270,6 +343,37 @@ class ModelForTagging(nn.Module):
         tag_logits = None
         if self.projection is not None:
             tag_logits = self.projection(self.dropout(word_repr_sup))
+
+        factorised_logits = {}
+        if self.factorised is not False:
+            l_num_logits = self.l_num_projection(
+                self.dropout(word_repr_sup_arg))
+            r_num_logits = self.r_num_projection(
+                self.dropout(word_repr_sup_arg))
+            aux_position_logits = self.aux_position_projection(
+                self.dropout(word_repr_sup_head))
+
+            factorised_logits = {
+                "l_arg_nums": l_num_logits,
+                "r_arg_nums": r_num_logits,
+                "aux_positions": aux_position_logits,
+            }
+            if self.factorised in ("complete", "seen"):
+                aux_label_logits = self.aux_label_projection(
+                    self.dropout(word_repr_sup_head))
+                left_label_logits = [
+                    projection(self.dropout(word_repr_sup_arg)) for projection
+                    in self.left_labels_projections
+                ]
+                right_label_logits = [
+                    projection(self.dropout(word_repr_sup_arg)) for projection
+                    in self.right_labels_projections
+                ]
+                factorised_logits["aux_rel_ids"] = aux_label_logits
+                for i, logits in enumerate(left_label_logits):
+                    factorised_logits[f"left_{i+1}"] = logits
+                for i, logits in enumerate(right_label_logits):
+                    factorised_logits[f"right_{i+1}"] = logits
 
         pos_logits = None
         if self.pos_projection is not None:
@@ -341,6 +445,7 @@ class ModelForTagging(nn.Module):
         pos_loss = None
         arc_loss = None
         label_loss = None
+        factorised_losses = {}
         if (
                 labels is not None and (self.training or report_loss)
                 and tag_logits is not None):
@@ -348,6 +453,55 @@ class ModelForTagging(nn.Module):
                 tag_logits, labels,  # word_mask,
                 printinfo=printinfo
             )
+
+        factorised_losses = {}
+        if len(factorised_logits) > 0:
+            assert l_arg_nums is not None
+            assert r_arg_nums is not None
+            assert aux_positions is not None
+            assert aux_rel_ids is not None
+            l_num_loss = losses.calc_loss_helper(
+                factorised_logits["l_arg_nums"], l_arg_nums,
+                printinfo=printinfo
+                )
+            r_num_loss = losses.calc_loss_helper(
+                factorised_logits["r_arg_nums"], r_arg_nums,
+                printinfo=printinfo
+                )
+            aux_position_loss = losses.calc_loss_helper(
+                factorised_logits["aux_positions"], aux_positions,
+                printinfo=printinfo
+                )
+            factorised_losses = {
+                "l_arg_nums": l_num_loss,
+                "r_arg_nums": r_num_loss,
+                "aux_positions": aux_position_loss
+            }
+            if self.factorised in ("complete", "seen"):
+                assert self.max_l is not None and self.max_r is not None
+                # no_aux_index = math.floor((self.max_l+self.max_r+3)/3)-1
+                factorised_losses["aux_rel_ids"] = losses.calc_loss_helper(
+                    factorised_logits["aux_rel_ids"], aux_rel_ids,
+                    # aux_labels != no_aux_index,
+                    printinfo=printinfo
+                    )
+
+                for i, _ in enumerate(left_label_logits):
+                    factorised_losses[
+                        f"left_{i+1}"] = losses.calc_loss_helper(
+                        factorised_logits[f"left_{i+1}"], kwargs[f"left_{i+1}"],
+                        # left_arg_num >= i+1,
+                        printinfo=printinfo
+                        )
+                for i, logits in enumerate(
+                        right_label_logits):
+                    factorised_losses[
+                        f"right_{i+1}"] = losses.calc_loss_helper(
+                        factorised_logits[f"right_{i+1}"], kwargs[f"right_{i+1}"],
+                        # right_arg_num >= i+1,
+                        printinfo=printinfo
+                        )
+
         if self.pos_projection is not None:
             assert pos_logits is not None
             pos_loss = losses.calc_loss_helper(
@@ -374,7 +528,8 @@ class ModelForTagging(nn.Module):
 
         return (
             loss, tag_logits, pos_loss, pos_logits,
-            arc_loss, S_arc, label_loss, S_lab)
+            arc_loss, S_arc, label_loss, S_lab,
+            factorised_losses, factorised_logits)
 
     @staticmethod
     def _gather_word_representations(

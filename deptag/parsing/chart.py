@@ -13,7 +13,6 @@ import tqdm
 import multiprocessing
 
 from .. import extraction, utils
-from . import deprels
 
 from timeit import default_timer as timer
 from datetime import timedelta
@@ -916,19 +915,11 @@ class System():
             contains_root: bool = False,
             ) -> None:
 
-        self._head_scores = head_scores
+        self._head_scores = head_scores.copy()
         self._supertag_scores = supertag_scores
         self._id2sup = id2sup
         self._k_supertag = min(k_supertag, self._supertag_scores.shape[-1])
         self._k_head_scores = min(k_head_scores, self._head_scores.shape[-1])
-
-        kth_smallest: np.ndarray = -np.partition(
-            -self._head_scores,
-            self._k_head_scores-1, axis=-1)
-
-        kth_smallest = kth_smallest[
-                :, -self._k_head_scores]  # type: ignore
-
 
         self._contains_root = contains_root
         self._head_scores[
@@ -941,19 +932,39 @@ class System():
         self._unmasked_head_scores = self._head_scores.copy()
 
         self._head_scores = self._head_scores.copy()
-        self._head_scores[
-            self._head_scores > kth_smallest[:, np.newaxis]] = np.inf
 
-        self._k_sup_inds: np.ndarray = np.argpartition(
-            -self._supertag_scores, -self._k_supertag,
-            axis=-1)[:, -self._k_supertag:]
+        top_head_inds = np.argpartition(
+            self._head_scores,
+            self._k_head_scores - 1,
+            axis=-1,
+        )[:, :self._k_head_scores]
+
+        keep = np.zeros(
+            self._head_scores.shape,
+            dtype=bool,
+        )
+
+        np.put_along_axis(
+            keep,
+            top_head_inds,
+            True,
+            axis=-1,
+        )
+
+        self._head_scores[~keep] = np.inf
+
+        self._k_sup_inds = np.argpartition(
+            self._supertag_scores,
+            self._k_supertag - 1,
+            axis=-1,
+        )[:, :self._k_supertag]
 
         self._step: int = 0
         self._length: int = self._head_scores.shape[0]
         self._max_r: int = min(max_r, self._length-1)
         self._max_l: int = min(max_l, self._length-1)
         self._chart: Chart = Chart(self._length, self._max_l, self._max_r)
-        self._agenda: Agenda = Agenda()
+        self._agenda: Agenda[Item] = Agenda()
 
         self._estimate_type = estimate_type
         self.outside_estimates: np.ndarray
@@ -1011,6 +1022,24 @@ class System():
             self.left_subst_head_unchecked_bucket_,
             self.left_adjoin_head_unchecked_bucket_,
         )
+
+        # print("supertag_scores shape:", self._supertag_scores.shape)
+        # print(
+        #     "min supertag:",
+        #     np.min(self._supertag_scores, axis=-1),
+        # )
+
+        # print("head_scores shape:", self._unmasked_head_scores.shape)
+        # print(
+        #     "min head:",
+        #     np.min(self._unmasked_head_scores, axis=-1),
+        # )
+
+        # print("root supertag scores:")
+        # print(self._supertag_scores[0])
+
+        # print("root head scores:")
+        # print(self._unmasked_head_scores[0])
 
     @staticmethod
     def compute_outside_estimates(
@@ -1207,6 +1236,13 @@ class System():
         prefix_head_min_t = np.ascontiguousarray(prefix_head_min.T)
         suffix_head_min_t = np.ascontiguousarray(suffix_head_min.T)
 
+        # System.debug_advanced(
+        #     min_supertag,
+        #     head_scores_t,
+        #     prefix_head_min_t,
+        #     suffix_head_min_t,
+        #     contains_root,
+        # )
         return System._advanced_outside_kernel(
             min_supertag,
             head_scores_t,
@@ -1255,16 +1291,55 @@ class System():
             self, item: Item, head: Item, head_weight: Weight,
             dep: Item = AXIOM, dep_weight: Weight | None = None,
             supertag_ind: int = 0) -> WeightPointer:
-
         result_item, result_weight = (
             self.get_item_weight_pointer_pair(
                 item, head, head_weight, dep, dep_weight, supertag_ind))
-
+        # print(
+        #     "new item:", item,
+        #     "new weight:", result_weight.sum,
+        #     "new inside:", result_weight.inside,
+        #     "new_outside:", result_weight.out_estimate)
         if result_weight.sum < inf:
             closed_weight = self._chart.peek(result_item)
             if closed_weight is None:
                 self._agenda.add_update(
                     result_item, result_weight)
+        # else:
+        #     # TODO: remove
+        #     item = result_item
+
+        #     i = item.start - 1
+        #     j = item.end - 1
+        #     c = item.anchor - 1
+
+        #     print(
+        #         "ADVANCED PRUNED:",
+        #         item,
+        #         "i,j,c =", i, j, c,
+        #     )
+
+        #     gold_heads = np.argmin(self._head_scores, axis=1)
+
+        #     if not (self._contains_root and c == 0):
+        #         print(
+        #             "anchor =", c,
+        #             "gold head =", gold_heads[c],
+        #         )
+
+        #     for k, h in enumerate(gold_heads):
+        #         if k == 0 and self._contains_root:
+        #             continue
+        #         if i <= k <= j:
+        #             continue
+        #         if i <= h <= j:
+        #             print(
+        #                 "outside token",
+        #                 k,
+        #                 "has head",
+        #                 h,
+        #                 "inside span",
+        #                 "anchor =", c,
+        #             )
         return result_weight
 
     def complete_(
@@ -1867,9 +1942,11 @@ class System():
     def axiom(self) -> None:
         for i in range(1, self._length+1):
             for sup_id in self._k_sup_inds[i-1]:
+                # print("sup_id:", sup_id.item())
                 if sup_id.item() not in self._id2sup:
                     continue
                 sup = self._id2sup[sup_id.item()]
+                # print("sup:", sup)
                 l_args = 0
                 r_args = 0
                 check_left = True
@@ -1888,10 +1965,11 @@ class System():
                 # print(l_args, r_args)
 
                 if l_args < i and r_args <= self._length - i:
-                    projective = supertag_to_item(i, self._id2sup[sup_id])
+                    projective = supertag_to_item(i, sup)
+                    # print("projective:", projective)
+                    # print("score", self._supertag_scores[i-1, sup_id])
                     if projective is None:
                         continue
-
                     weight = self.add_if_finite_(
                         projective,
                         AXIOM, Weight(
@@ -2006,141 +2084,20 @@ class System():
         #     goal = longest_item, longest_weight_pointer
         return goal
 
-    # def _backtrack(
-    #         self, weight_pointer: WeightPointer) -> tuple[
-    #             list[int], list[int], list[int], list[int], list[int],
-    #             list[str], list[str], list[str], list[str], str | None]:
-
-    #     if weight_pointer.back1.is_axiom:
-    #         projective_tag = extraction.process_relative_tag_to_projective(
-    #             self._id2sup[weight_pointer.supertag_ind]
-    #         )
-    #         assert projective_tag is not None
-
-    #         l_args, r_args, _, auxdep = projective_tag
-
-    #         return (
-    #             [], [], [], [], [weight_pointer.supertag_ind],
-    #             [], [], l_args, r_args, auxdep)
-
-    #     if weight_pointer.back2.is_axiom:
-    #         return self._backtrack(
-    #             self._chart[weight_pointer.back1])
-
-    #     (
-    #         h_l_heads, h_r_heads, h_l_lab, h_r_lab, h_supertag_inds,
-    #         h_l_dep, h_r_dep, h_l_mdep,
-    # h_r_mdep, h_auxdep) = self._backtrack(
-    #         self._chart[weight_pointer.back1]
-    #     )
-    #     (
-    #         d_l_heads, d_r_heads, d_l_lab, d_r_lab, d_supertag_inds,
-    #         d_l_dep, d_r_dep, _, _, d_auxdep) = self._backtrack(
-    #         self._chart[weight_pointer.back2]
-    #     )
-
-    #     assert weight_pointer.back1.anchor is not None
-    #     if weight_pointer.back2.is_adjunct:
-    #         assert weight_pointer.back1.start is not None
-    #         assert weight_pointer.back2.start is not None
-    #         assert d_auxdep is not None
-
-    #         if weight_pointer.back1.start < weight_pointer.back2.start:
-    #             return (
-    #                 h_l_heads,
-    #                 h_r_heads + d_l_heads + [
-    #                     weight_pointer.back1.anchor] + d_r_heads,
-    #                 h_l_lab, h_r_lab + d_l_lab + [1] + d_r_lab,
-    #                 h_supertag_inds + d_supertag_inds,
-    #                 h_l_dep, h_r_dep + d_l_dep + [d_auxdep] + d_r_dep,
-    #                 h_l_mdep, h_r_mdep, h_auxdep)
-    #         else:
-    #             return (
-    #                 d_l_heads + [
-    #                     weight_pointer.back1.anchor] + d_r_heads + h_l_heads,
-    #                 h_r_heads,
-    #                 d_l_lab + [1] + d_r_lab + h_l_lab, h_r_lab,
-    #                 d_supertag_inds + h_supertag_inds,
-    #                 d_l_dep + [d_auxdep] + d_r_dep + h_l_dep, h_r_dep,
-    #                 h_l_mdep, h_r_mdep, h_auxdep)
-
-    #     if weight_pointer.back1.is_switched:
-
-    #         return (
-    #             h_l_heads,
-    #             h_r_heads + d_l_heads + [
-    #                 weight_pointer.back1.anchor] + d_r_heads,
-    #             h_l_lab, h_r_lab + d_l_lab + [0] + d_r_lab,
-    #             h_supertag_inds + d_supertag_inds,
-    #             h_l_dep, h_r_dep + d_l_dep + [h_r_mdep[0]] + d_r_dep,
-    #             h_l_mdep, (h_r_mdep[1:] if len(h_r_mdep) > 1 else []),
-    #             h_auxdep)
-    #     else:
-    #         return (
-    #             d_l_heads + [
-    #                 weight_pointer.back1.anchor] + d_r_heads + h_l_heads,
-    #             h_r_heads,
-    #             d_l_lab + [0] + d_r_lab + h_l_lab, h_r_lab,
-    #             d_supertag_inds + h_supertag_inds,
-    #             d_l_dep + [h_l_mdep[-1]] + d_r_dep + h_l_dep, h_r_dep,
-    #             h_l_mdep[:-1], h_r_mdep, h_auxdep)
-
-    # def backtrack(
-    #         self, weight_pointer: WeightPointer, pad: bool = False
-    #         ) -> tuple[
-    #             list[int], list[int], list[int], list[str]]:
-    #     """returns a list of head indices (0 is root, 1 the first token),
-    #     a list of binary scores
-    #     (0 if the position was substituted into its head
-    #     and 1 if it was adjoined), a list of supertag indices and
-    #     a list of (simplified) dependency relations."""
-
-    #     # TODO: we can get a lot better if also taking the top length
-    #     # items for the remaining spans
-
-    #     if not weight_pointer.back1.is_axiom:
-    #         (
-    #             l_heads, r_heads, l_lab, r_lab, supertag_inds,
-    #             l_dep, r_dep, _, _, _) = self._backtrack(weight_pointer)
-
-    #         heads = l_heads + [0] + r_heads
-    #         lab = l_lab + [0] + r_lab
-    #         supertags = supertag_inds
-    #         dep = l_dep + ["root"] + r_dep
-
-    #     else:
-    #         heads = []
-    #         lab = []
-    #         supertags = []
-    #         dep = []
-
-    #     if pad:
-    #         if not weight_pointer.back1.is_axiom:
-    #             assert weight_pointer.back1.start is not None
-    #             assert weight_pointer.back1.end is not None
-    #             start = int(min(
-    #                 weight_pointer.back1.start,
-    #                 (
-    #                     inf if weight_pointer.back2.start is None
-    #                     else weight_pointer.back2.start)))
-    #             end = int(max(
-    #                 weight_pointer.back1.end,
-    #                 (
-    #                     -inf if weight_pointer.back2.end is None
-    #                     else weight_pointer.back2.end)))
-    #         else:
-    #             start = 1
-    #             end = 0
-
-    #         l_pad = start-1
-    #         r_pad = self._length-end
-
-    #         heads = [0]*l_pad + heads + [0]*r_pad
-    #         lab = [0]*l_pad + lab + [0]*r_pad
-    #         supertags = [0]*l_pad + supertags + [0]*r_pad
-    #         dep = ["root"]*l_pad + dep + ["root"]*r_pad
-
-    #     return heads, lab, supertags, dep
+    def print(
+            self, popped_item: Item | None = None,
+            weight: Weight | None = None, goal: bool = False):
+        popped = ""
+        if popped_item is not None:
+            popped = str(popped_item)
+        print(
+            f"{self._step: <3} | {str(popped): <20} "
+            f"| {str(self._agenda)}")
+        if goal:
+            assert weight is not None
+            print(
+                f"GOAL: weight {round(float(weight.sum), 2)}, "
+                f"probability {round(10**(-weight.sum), 20)}")
 
     def _backtrack_into(
             self,
@@ -2313,77 +2270,6 @@ class System():
         # unless padding should be implemented here.
         return heads, labels, supertag_inds, dependencies
 
-    # def _backtrack_disconnected(self, start: int, end: int) -> tuple[
-    #         list[int], list[int], list[int], list[str]]:
-    #     # TODO: This recursive definition is not efficient.
-    #     # Replace this with a chart-based approach:
-    #     # a cell either contains a reference to a System chart item
-    #     # or a reference to two other chart items
-    #     # it also keeps track of the maximum length System chart subsequence
-    #     # in its span. This is how the split points are compared
-    #     # Is there a better approach?
-
-    #     min_item: Item = AXIOM
-    #     min_weight_pointer: WeightPointer = WeightPointer(
-    #         inf, inf, AXIOM, AXIOM, 0
-    #     )
-
-    #     for l in list(range(1, end-start+2))[::-1]:  # noqa: E741
-    #         if not min_item.is_axiom:
-    #             break
-    #         for i in range(start, end-l+2):
-
-    #             for c in range(i, i+l):
-    #                 item = Item(i, i+l-1, c, None, None, N)
-    #                 weight = self._chart.peek(item)
-    #                 if weight is not None:
-    #                     if weight < min_weight_pointer:
-    #                         min_item = item
-    #                         min_weight_pointer = weight
-
-    #     if min_item.is_axiom:
-    #         length = end-start+1
-    #         return [0]*length, [0]*length, [0]*length, ["root"]*length
-
-    #     else:
-    #         assert min_item.start is not None
-    #         assert min_item.end is not None
-    #         l_head, l_lab, l_tag, l_dep = self._backtrack_disconnected(
-    #             start, min_item.start-1
-    #         )
-    #         r_head, r_lab, r_tag, r_dep = self._backtrack_disconnected(
-    #             min_item.end+1, end
-    #         )
-    #         head, lab, tag, dep = self.backtrack(
-    #             min_item, min_weight_pointer)
-
-    #         return (
-    #             l_head + head + r_head,
-    #             l_lab + lab + r_lab,
-    #             l_tag + tag + r_tag,
-    #             l_dep + dep + r_dep
-    #         )
-
-    # def backtrack_disconnected(self) -> tuple[
-    #         list[int], list[int], list[int], list[str]]:
-    #     output = self._backtrack_disconnected(1, self._length)
-    #     return output
-
-    def print(
-            self, popped_item: Item | None = None,
-            weight: Weight | None = None, goal: bool = False):
-        popped = ""
-        if popped_item is not None:
-            popped = str(popped_item)
-        print(
-            f"{self._step: <3} | {str(popped): <20} "
-            f"| {str(self._agenda)}")
-        if goal:
-            assert weight is not None
-            print(
-                f"GOAL: weight {round(float(weight.sum), 2)}, "
-                f"probability {round(10**(-weight.sum), 20)}")
-
     def _record_fallback_axiom(
             self,
             item: Item,
@@ -2436,59 +2322,6 @@ class System():
                 weight_pointer,
                 cost,
             )
-
-    # def _write_fallback_component(
-    #         self,
-    #         item: Item,
-    #         weight_pointer: WeightPointer,
-    #         heads: list[int],
-    #         labels: list[int],
-    #         supertag_inds: list[int],
-    #         dependencies: list[str],
-    #         root_position: int,
-    #         ) -> None:
-    #     """Backtrack one complete fallback component into global arrays."""
-    #     assert item.is_complete
-    #     assert item.start is not None
-    #     assert item.end is not None
-    #     assert item.anchor is not None
-
-    #     (
-    #         _remaining_left_dependencies,
-    #         _remaining_right_dependencies,
-    #         auxiliary_dependency,
-    #     ) = self._backtrack_into(
-    #         item,
-    #         weight_pointer,
-    #         heads,
-    #         labels,
-    #         supertag_inds,
-    #         dependencies,
-    #     )
-
-    #     anchor_index = item.anchor - 1
-
-    #     # Internal dependents were assigned by _backtrack_into(), but the
-    #     # component anchor has no parent within its own derivation.
-    #     assert heads[anchor_index] == -1, (
-    #         f"Fallback component anchor {item.anchor} already received "
-    #         f"head {heads[anchor_index]} while backtracking {item}."
-    #     )
-
-    #     if item.anchor == root_position:
-    #         heads[anchor_index] = 0
-    #         labels[anchor_index] = 0
-    #         dependencies[anchor_index] = "root"
-    #     else:
-    #         # Artificially connect the disconnected component to the root.
-    #         heads[anchor_index] = root_position
-
-    #         if auxiliary_dependency is not None:
-    #             labels[anchor_index] = 1
-    #             dependencies[anchor_index] = auxiliary_dependency
-    #         else:
-    #             labels[anchor_index] = 0
-    #             dependencies[anchor_index] = "dep"
 
     def _write_fallback_component(
             self,
@@ -2939,27 +2772,25 @@ class System():
 def process(
         inp
         ) -> tuple[np.ndarray, np.ndarray]:
-    # prefix: np.ndarray, ma: np.ndarray, ig: np.ndarray,
-    #             supertag_scores: np.ndarray, pad_len: int,
-    #             predicted_pos: np.ndarray
     (
-        prefix, ma, ig, supertag_scores, pad_len, predicted_pos,
+        ma, ig, supertag_scores, predicted_pos,
         deprel2id, id2sup_relative, id2pos, root_sup_id, max_l, max_r,
         k_head_scores, k_supertag) = inp
     ignore = ig == -1
-    # temp = ma.copy()
-    # temp[ignore][:, ignore] = float("-inf")
-    # temp = temp.argmax(-1)
-    # temp[ignore] = -1
+    word_ignore = ignore[1:]
+
+    assert (
+        len(ignore) ==
+        supertag_scores.shape[0] + 1
+    )
+
+    pad_len = ma.shape[0]
+
+    prefix = np.zeros((1, ma.shape[-1]), dtype=int)
+    prefix[0, 0] = 1
 
     ma = ma[~ignore][:, np.logical_or(
         ~ignore, prefix[0][:ma.shape[-1]])]
-    #
-    #inpt = utils.softmax(ma)
-    #
-    #inpt = np.concatenate((prefix[:, :inpt.shape[-1]], inpt))  #
-    #with np.errstate(divide='ignore'):
-    #    inpt = -np.log10(inpt)       # inpt[:, 1:])
 
     inpt = utils.neg_log10_softmax(ma)
 
@@ -2976,16 +2807,7 @@ def process(
         axis=0,
     )
 
-    # supertag_scores = utils.softmax(supertag_scores[~ignore])
-    # root = np.zeros((1, supertag_scores.shape[-1],))
-    # root[0, root_sup_id] = 1
-    # supertag_scores = np.concatenate(
-    #     (root, supertag_scores),
-    # )
-    # with np.errstate(divide='ignore'):
-    #     supertag_scores = -np.log10(supertag_scores)
-
-    supertag_scores = utils.neg_log10_softmax(supertag_scores[~ignore])
+    supertag_scores = supertag_scores[~word_ignore]
     root_costs = np.full(
         (1, supertag_scores.shape[-1]),
         np.inf,
@@ -3002,34 +2824,62 @@ def process(
         inpt, supertag_scores, id2sup_relative,
         max_r=max_r, max_l=max_l,
         k_supertag=k_supertag, k_head_scores=k_head_scores,
-        contains_root=True)
+        contains_root=True,
+        estimate_type="simple")
     result = system.run(printinfo=False)
 
     if result is None:
-        # head_result = np.zeros((inpt.shape[0],), dtype=int)
-        # deprel_result = np.zeros((inpt.shape[0],), dtype=int)
+        # print("FALLBACK")
         backtracked = system.fallback_backtrack()
+        # projective = is_projective(ma.argmax(-1))
+        # if projective:
+        #     raise Exception("Fallback for projective sentence.")
+        # raise Exception
     else:
+        # print("FULL")
+        # gold_items = []
+        # collect_derivation(
+        #     system,
+        #     result[0],
+        #     result[1],
+        #     gold_items,
+        # )
+        # for item in gold_items:
+        #     i = item.start - 1
+        #     j = item.end - 1
+        #     c = item.anchor - 1
+
+        #     h = system.get_outside_estimate(item)
+
+        #     if not np.isfinite(h):
+        #         print("GOLD ITEM KILLED:", item)
+        #         debug_advanced_item(
+        #             system._supertag_scores,
+        #             system._head_scores,
+        #             i, j, c,
+        #             contains_root=(i == 1)
+        #             )
+        #         raise Exception
         backtracked = system.backtrack(result[0], result[1])
 
     predicted_pos = np.concatenate(
-        (predicted_pos[0, np.newaxis], predicted_pos[~ignore]))
-    predicted_pos += predicted_pos < 1  # WHY?
-    # TODO: what is the root POS tag?
+        (predicted_pos[0, np.newaxis], predicted_pos[~word_ignore]))
 
     head_result = np.array(backtracked[0], dtype=int)-1
     head_result += head_result < 0
     head_result[0] = 0
-    # print(head_result.shape, head_result)
     deprel_str_result: list[str] = backtracked[3]
-    predicted_head_pos = predicted_pos[head_result[1:]]
-    # print(predicted_pos.shape, predicted_head_pos.shape)
+    # predicted_head_pos = predicted_pos[head_result[1:]]
+    # deprel_result = np.array([
+    #     deprel2id[deprels.reconstruct(
+    #         deprel, id2pos[dep_pos.item()], id2pos[head_pos.item()])]
+    #     for deprel, dep_pos, head_pos in zip(
+    #         deprel_str_result[1:], predicted_pos[1:],
+    #         predicted_head_pos)
+    # ])
+
     deprel_result = np.array([
-        deprel2id[deprels.reconstruct(
-            deprel, id2pos[dep_pos.item()], id2pos[head_pos.item()])]
-        for deprel, dep_pos, head_pos in zip(
-            deprel_str_result[1:], predicted_pos[1:],
-            predicted_head_pos)
+        deprel2id[deprel] for deprel in deprel_str_result[1:]
     ])
 
     # shape: [unpadded_len]
@@ -3040,7 +2890,6 @@ def process(
     head_result = np.concatenate(
         (prefix[0, 0, np.newaxis], head_result[1:]), axis=0)
 
-    # print("heads_long1", heads_long)
     cumsum = np.cumsum(ignore) - 1  # [0, (0, 0), 1, (1,)]
     # print("cumsum", cumsum)
     head_cumsum = cumsum[~ignore]
@@ -3049,23 +2898,40 @@ def process(
     head_cumsum[head_result[1:] == 0] = 0
     # [h_c[x], h_c[y], h_c[z]]
 
-    # print("result", result)
-    # print("h_cums", head_cumsum)
     head_result[1:] += head_cumsum
-
-    # heads = np.full((pad_len,), -1)
-    # heads[ig != -1] = result[1:]
-    # ignore_sum = np.cumsum(ignore)-1
-    # return heads + ignore_sum
     heads = np.full((pad_len,), -1)
     heads[~ignore] = head_result[1:]
-    # print("mst   ", heads)
-    # print("argmax", temp)
-    # print("gold  ", ig)
 
     deprels_ = np.full((pad_len,), 0)
     deprels_[~ignore] = deprel_result
+
     return heads, deprels_
+
+
+def is_projective(heads):
+    n = len(heads)
+
+    def is_descendant(node, ancestor):
+        while node != 0:
+            if node == ancestor:
+                return True
+            node = heads[node - 1]
+        return ancestor == 0
+
+    for dep in range(1, n + 1):
+        head = heads[dep - 1]
+
+        if head < 0:
+            continue
+
+        lo = min(head, dep)
+        hi = max(head, dep)
+
+        for k in range(max(1, lo + 1), hi):
+            if not is_descendant(k, head):
+                return False
+
+    return True
 
 
 def get_eval_workers() -> int:
@@ -3084,11 +2950,125 @@ def get_eval_workers() -> int:
     return workers
 
 
+def collect_derivation(system, item, wp, result):
+    result.append(item)
+
+    if wp.back1.is_axiom:
+        return
+
+    back1 = wp.back1
+    collect_derivation(
+        system,
+        back1,
+        system._chart[back1],
+        result,
+    )
+
+    if not wp.back2.is_axiom:
+        back2 = wp.back2
+        collect_derivation(
+            system,
+            back2,
+            system._chart[back2],
+            result,
+        )
+
+
+def debug_advanced_item(
+        supertag_scores,
+        head_scores,
+        i,
+        j,
+        c,
+        contains_root=True,
+        ):
+
+    n = len(head_scores)
+    min_sup = supertag_scores.min(axis=-1)
+
+    prefix = np.full((n, n + 1), np.inf)
+    prefix[:, 1:] = np.minimum.accumulate(
+        head_scores,
+        axis=1,
+    )
+
+    suffix = np.full((n, n + 1), np.inf)
+    suffix[:, :n] = np.minimum.accumulate(
+        head_scores[:, ::-1],
+        axis=1,
+    )[:, ::-1]
+
+    outside_sup = (
+        min_sup[:i].sum()
+        + min_sup[j + 1:].sum()
+    )
+
+    print("ITEM", i, j, c)
+    print("outside supertag =", outside_sup)
+
+    outside_head = 0.0
+
+    outside_tokens = list(
+        range(int(contains_root), i)
+    ) + list(
+        range(j + 1, n)
+    )
+
+    for k in outside_tokens:
+        vals = (
+            prefix[k, i],
+            suffix[k, j + 1],
+            head_scores[k, c],
+        )
+        best = min(vals)
+
+        if not np.isfinite(best):
+            print(
+                "NO HEAD FOR OUTSIDE TOKEN",
+                k,
+                "prefix/suffix/anchor =", vals,
+                "finite heads =",
+                np.flatnonzero(
+                    np.isfinite(head_scores[k])
+                ),
+            )
+
+        outside_head += best
+
+    print("outside head =", outside_head)
+
+    if contains_root and c == 0:
+        anchor_head = 0.0
+    else:
+        vals = (
+            prefix[c, i],
+            suffix[c, j + 1],
+        )
+        anchor_head = min(vals)
+
+        print(
+            "anchor head:",
+            c,
+            vals,
+            "finite heads =",
+            np.flatnonzero(
+                np.isfinite(head_scores[c])
+            ),
+        )
+
+    print("anchor head cost =", anchor_head)
+    print(
+        "TOTAL =",
+        outside_sup + outside_head + anchor_head,
+    )
+
+
+
 def chart(
         score_matrix: np.ndarray,
         ignore_deprels: np.ndarray,
         supertag_scores: np.ndarray,
-        id2sup: Mapping[int, str],
+        id2sup_relative: Mapping[int, extraction.RelativeTag],
         id2pos: Mapping[int, str],
         deprel2id: Mapping[str, int],
         predicted_pos_ids: np.ndarray,
@@ -3097,150 +3077,34 @@ def chart(
         root_sup_id: int,
         k_supertag: int = 10,
         k_head_scores: int = 10,
-        ) -> np.ndarray:
-
-    prefix = np.zeros((1, score_matrix.shape[-1]), dtype=int)
-    prefix[0, 0] = 1
-
-    id2sup_relative = {
-        i: extraction.convert_string_to_relative_relation(tag)
-        for i, tag in id2sup.items()}
-
-    # def process(
-    #         prefix: np.ndarray, ma: np.ndarray, ig: np.ndarray,
-    #         supertag_scores: np.ndarray, pad_len: int,
-    #         predicted_pos: np.ndarray
-    #         ) -> tuple[np.ndarray, np.ndarray]:
-    #     # prefix: np.ndarray, ma: np.ndarray, ig: np.ndarray,
-    #     #             supertag_scores: np.ndarray, pad_len: int,
-    #     #             predicted_pos: np.ndarray
-    #     # prefix, ma, ig, supertag_scores, pad_len, predicted_pos = inp
-    #     ignore = ig == -1
-    #     # temp = ma.copy()
-    #     # temp[ignore][:, ignore] = float("-inf")
-    #     # temp = temp.argmax(-1)
-    #     # temp[ignore] = -1
-
-    #     ma = ma[~ignore][:, np.logical_or(
-    #         ~ignore, prefix[0][:ma.shape[-1]])]
-
-    #     inpt = utils.softmax(ma)
-
-    #     inpt = np.concatenate((prefix[:, :inpt.shape[-1]], inpt))  #
-    #     inpt = -np.log10(inpt)       # inpt[:, 1:])prefix: np.ndarray,
-    # ma: np.ndarray, ig: np.ndarray,
-    #     #             supertag_scores: np.ndarray, pad_len: int,
-    #     #             predicted_pos: np.ndarray
-
-    #     supertag_scores = utils.softmax(supertag_scores[~ignore])
-    #     root = np.zeros((1, supertag_scores.shape[-1],))
-    #     root[0, root_sup_id] = 1
-    #     supertag_scores = np.concatenate(
-    #         (root, supertag_scores),
-    #     )
-    #     supertag_scores = -np.log10(supertag_scores)
-
-    #     system = System(
-    #         inpt, supertag_scores, id2sup_relative,
-    #         max_r=max_r, max_l=max_l,
-    #         k_supertag=k_supertag, k_head_scores=k_head_scores,
-    #         contains_root=True)
-    #     result = system.run(allow_incomplete=False, printinfo=False)
-
-    #     if result is None:
-    #         # head_result = np.zeros((inpt.shape[0],), dtype=int)
-    #         # deprel_result = np.zeros((inpt.shape[0],), dtype=int)
-    #         backtracked = system.backtrack_disconnected()
-    #     else:
-    #         backtracked = system.backtrack(result[1])
-
-    #     predicted_pos = np.concatenate(
-    #         (predicted_pos[0, np.newaxis], predicted_pos[~ignore]))
-    #     predicted_pos += predicted_pos < 1  # WHY?
-    #     # TODO: what is the root POS tag?
-
-    #     head_result = np.array(backtracked[0], dtype=int)-1
-    #     head_result += head_result < 0
-    #     head_result[0] = 0
-    #     # print(head_result.shape, head_result)
-    #     deprel_str_result: list[str] = backtracked[3]
-    #     predicted_head_pos = predicted_pos[head_result[1:]]
-    #     # print(predicted_pos.shape, predicted_head_pos.shape)
-    #     deprel_result = np.array([
-    #         deprel2id[deprels.reconstruct(
-    #             deprel, id2pos[dep_pos.item()], id2pos[head_pos.item()])]
-    #         for deprel, dep_pos, head_pos in zip(
-    #             deprel_str_result[1:], predicted_pos[1:],
-    #             predicted_head_pos)
-    #     ])
-
-    #     # shape: [unpadded_len]
-    #     # The indices refer to the head positions without ignored tokens.
-    #     # Now: add cumulative sum of ignore occurrences to the respective
-    #     # references
-
-    #     head_result = np.concatenate(
-    #         (prefix[0, 0, np.newaxis], head_result[1:]), axis=0)
-
-    #     # print("heads_long1", heads_long)
-    #     cumsum = np.cumsum(ignore) - 1  # [0, (0, 0), 1, (1,)]
-    #     # print("cumsum", cumsum)
-    #     head_cumsum = cumsum[~ignore]
-    #     # [1, (1, 1), 2, (2,)][False, True, True, False, True] -1 = [0, 0, 1]
-    #     head_cumsum = head_cumsum[head_result[1:]-1]
-    #     head_cumsum[head_result[1:] == 0] = 0
-    #     # [h_c[x], h_c[y], h_c[z]]
-
-    #     # print("result", result)
-    #     # print("h_cums", head_cumsum)
-    #     head_result[1:] += head_cumsum
-
-    #     # heads = np.full((pad_len,), -1)
-    #     # heads[ig != -1] = result[1:]
-    #     # ignore_sum = np.cumsum(ignore)-1
-    #     # return heads + ignore_sum
-    #     heads = np.full((pad_len,), -1)
-    #     heads[~ignore] = head_result[1:]
-    #     # print("mst   ", heads)
-    #     # print("argmax", temp)
-    #     # print("gold  ", ig)
-
-    #     deprels_ = np.full((pad_len,), 0)
-    #     deprels_[~ignore] = deprel_result
-    #     return heads, deprels_
+        ) -> tuple[np.ndarray, np.ndarray]:
 
     start = timer()
-    # stack = [
-    #     process(
-    #         prefix, ma, ig, sup, score_matrix.shape[1], pp)
-    #     for ma, ig, sup, pp in zip(
-    #         score_matrix, ignore_deprels, supertag_scores, predicted_pos_ids)]
 
-    # prefix, ma, ig, supertag_scores, pad_len, predicted_pos,
-    # deprel2id, id2sup_relative, id2pos, root_sup_id, max_l, max_r,
-    # k_head_scores, k_supertag) = inp
-
-    le = score_matrix.shape[0]
-    # num_workers = multiprocessing.cpu_count()
-    # chunksize = max(1, (le + num_workers * 16 - 1) // (num_workers * 16))
     chunksize = 1
     stack = multiprocessing.Pool(processes=get_eval_workers()).map(
         process,
         tqdm.tqdm(
-            zip(
-                [prefix]*le,
-                score_matrix, ignore_deprels, supertag_scores,
-                [score_matrix.shape[1]]*le,
+            list(zip(
+                score_matrix,
+                ignore_deprels,
+                supertag_scores,
                 predicted_pos_ids,
-                [deprel2id]*le, [id2sup_relative]*le, [id2pos]*le,
-                [root_sup_id]*le,
-                [max_l]*le, [max_r]*le, [k_head_scores]*le, [k_supertag]*le),
+                itertools.repeat(deprel2id),
+                itertools.repeat(id2sup_relative),
+                itertools.repeat(id2pos),
+                itertools.repeat(root_sup_id),
+                itertools.repeat(max_l),
+                itertools.repeat(max_r),
+                itertools.repeat(k_head_scores),
+                itertools.repeat(k_supertag))),  # [22:23],
             desc="Chart parsing",
-            total=le),
+            total=score_matrix.shape[0]),
         chunksize=chunksize)
 
     end = timer()
     print("Chart took", timedelta(seconds=end-start), "seconds")
+
     return np.stack([s[0] for s in stack]), np.stack([s[1] for s in stack])
 
 # TODO: keep track of widest complete item, return it if not finding goal,

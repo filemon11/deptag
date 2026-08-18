@@ -5,6 +5,7 @@ import os
 import torch
 from torch.nn.utils.rnn import pad_sequence
 import transformers
+from ..import extraction, data
 
 from typing import Mapping, Sequence, Iterable
 
@@ -53,7 +54,8 @@ class TaggingDataset(torch.utils.data.Dataset):
             self, split, tokenizer, tag_system: Mapping[str, int],
             data: Sequence[Sequence[tuple[str, str, str, int, str]]], device,
             dataset: str,
-            max_train_len=350):
+            max_train_len=350,
+            factorised_max_left_right: None | tuple[int, int] = None):
         self.split = split
         self.trees = data
         self.tokenizer: transformers.PreTrainedTokenizerBase = tokenizer
@@ -65,6 +67,12 @@ class TaggingDataset(torch.utils.data.Dataset):
         self.tag_system = tag_system
         self.pad_token_id = self.tokenizer.pad_token_id
         self.device = device
+
+        if factorised_max_left_right is None:
+            self.max_left = None
+            self.max_right = None
+        else:
+            self.max_left, self.max_right = factorised_max_left_right
 
         if "train" in split and max_train_len is not None:
             # To speed up training, we only train on short sentences.
@@ -205,18 +213,21 @@ class TaggingDataset(torch.utils.data.Dataset):
         pos_dict: dict[str, int] = {}
         for sent in self.trees:
             for _, x, _, _, _ in sent:
-                pos_dict[x] = pos_dict.get(x, 1 + len(pos_dict))
+                pos_dict[x] = pos_dict.get(x, len(pos_dict))
         return pos_dict
 
     def get_deprel_dict(self):
+        # TOOD: add option for subtypes
         deprel_dict: dict[str, int] = {}
         for sent in self.trees:
             for _, _, _, _, x in sent:
-                deprel_dict[x] = deprel_dict.get(x, 1 + len(deprel_dict))
+                if data.has_subtype(x):
+                    x = data.split_main_sub(x)[0]
+                deprel_dict[x] = deprel_dict.get(x, len(deprel_dict))
         return deprel_dict
 
     def __len__(self):
-        return int(len(self.trees)/1)  # 24)
+        return int(len(self.trees))  # /24)  # TODO
 
     def __getitem__(self, index: int):
         sent = self.trees[index]
@@ -230,7 +241,9 @@ class TaggingDataset(torch.utils.data.Dataset):
         # use BOS token as root
 
         pos_tags = [self.pos_dict.get(w[1], 0) for w in sent]
-        deprel_tags = [self.deprel_dict.get(w[4], 0) for w in sent]
+        deprel_tags = [self.deprel_dict.get(
+            data.split_main_sub(w[4])[0] if data.has_subtype(w[4]) else w[4],
+            0) for w in sent]
 
         # encoded = self.tokenizer._encode_plus(' '.join(words))
         # word_end_positions = [
@@ -251,6 +264,67 @@ class TaggingDataset(torch.utils.data.Dataset):
 
         tag_ids = torch.tensor(tag_ids_, dtype=torch.long)
         # labels = torch.full_like(input_ids, -1)
+
+        factorised_tags = [
+            extraction.convert_relative_tag_to_factorised(
+                extraction.convert_string_to_relative_relation(w[2]))
+            for w in sent]
+
+        factorised_dict = dict()
+        if self.max_left is not None and self.max_right is not None:
+            l_arg_nums = [tag[0] for tag in factorised_tags]
+            l_args = [
+                list(reversed([None] * (
+                    self.max_left - len(tag[1])) + tag[1]))
+                for tag in factorised_tags]
+            l_arg_ids = [
+                [(self.deprel_dict.get(
+                    deprel, 0) if deprel is not None else -1)
+                    for deprel in word]
+                for word in l_args]
+            # TODO: these must be passed individually
+            r_arg_nums = [tag[2] for tag in factorised_tags]
+            r_args = [
+                tag[3] + [None] * (self.max_right - len(tag[3]))
+                for tag in factorised_tags]
+            r_arg_ids = [
+                [(self.deprel_dict.get(
+                    deprel, 0) if deprel is not None else -1)
+                    for deprel in word]
+                for word in r_args]
+            aux_positions = [
+                (tag[4] if tag[4] is not None else 0) + self.max_left + 1
+                for tag in factorised_tags]
+            # maximum is 2 + max_left + max_right
+
+            aux_rel_ids = [
+                (self.deprel_dict.get(tag[5], 0) if tag is not None else -1)
+                for tag in factorised_tags]
+
+            left_dict = {
+                f"left_{i}": torch.tensor(
+                    [word[i-1] for word in l_arg_ids], dtype=torch.long
+                ) for i in range(1, self.max_left+1)
+            }
+            right_dict = {
+                f"right_{i}": torch.tensor(
+                    [word[i-1] for word in r_arg_ids], dtype=torch.long
+                ) for i in range(1, self.max_right+1)
+            }
+
+            factorised_dict = {
+                "l_arg_nums": torch.tensor(
+                    l_arg_nums, dtype=torch.long),
+                "r_arg_nums": torch.tensor(
+                    r_arg_nums, dtype=torch.long
+                ),
+                "aux_positions": torch.tensor(
+                    aux_positions, dtype=torch.long
+                ),
+                "aux_rel_ids": torch.tensor(
+                    aux_rel_ids, dtype=torch.long
+                ),
+            } | left_dict | right_dict
 
         # heads_long = torch.full_like(input_ids, -1)
 
@@ -303,61 +377,8 @@ class TaggingDataset(torch.utils.data.Dataset):
             "heads": heads,  # original UD heads: 0..num_words
             "deprel_ids": torch.tensor(
                 deprel_tags,
-                dtype=torch.long,
-            ),
-        }
-
-    # def collate(self, batch):
-    #     # for GPT-2, self.pad_token_id is None
-    #     # pad_token_id = (
-    #     #     self.pad_token_id if self.pad_token_id is not None
-    #     #     else -100)
-    #     if self.pad_token_id is None:
-    #         raise ValueError("The tokenizer has no padding token.")
-
-    #     input_ids = pad_sequence(
-    #         [item['input_ids'] for item in batch],
-    #         batch_first=True, padding_value=self.pad_token_id)
-
-    #     # attention_mask = (input_ids != pad_token_id).float()
-    #     attention_mask = input_ids.ne(self.pad_token_id)
-
-    #     # # for GPT-2, change -100 back into 0
-    #     # input_ids = torch.where(
-    #     #     input_ids == -100,
-    #     #     0,
-    #     #     input_ids
-    #     # )
-
-    #     end_of_word = pad_sequence(
-    #         [item['end_of_word'] for item in batch],
-    #         batch_first=True, padding_value=0)
-
-    #     pos_ids = pad_sequence(
-    #         [item['pos_ids'] for item in batch],
-    #         batch_first=True, padding_value=-1)
-
-    #     deprel_ids = pad_sequence(
-    #         [item['deprel_ids'] for item in batch],
-    #         batch_first=True, padding_value=-1)
-
-    #     labels = pad_sequence(
-    #         [item['labels'] for item in batch],
-    #         batch_first=True, padding_value=-1)
-
-    #     heads = pad_sequence(
-    #         [item['heads'] for item in batch],
-    #         batch_first=True, padding_value=-1)
-
-    #     return {
-    #         'input_ids': input_ids,
-    #         'pos_ids': pos_ids,
-    #         'deprel_ids': deprel_ids,
-    #         'end_of_word': end_of_word,
-    #         'attention_mask': attention_mask,
-    #         'labels': labels,
-    #         'heads': heads,
-    #     }
+                dtype=torch.long),
+        } | factorised_dict
 
     def collate(self, batch):
         input_ids = pad_sequence(
@@ -401,7 +422,7 @@ class TaggingDataset(torch.utils.data.Dataset):
             padding_value=-1,
         )
 
-        return {
+        output_dict = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
 
@@ -412,3 +433,42 @@ class TaggingDataset(torch.utils.data.Dataset):
             "heads": heads,
             "deprel_ids": deprel_ids,
         }
+
+        if self.max_left is not None and self.max_right is not None:
+
+            output_dict |= {
+                "l_arg_nums": pad_sequence(
+                    [item["l_arg_nums"] for item in batch],
+                    batch_first=True,
+                    padding_value=-1,
+                ),
+                "r_arg_nums": pad_sequence(
+                    [item["r_arg_nums"] for item in batch],
+                    batch_first=True,
+                    padding_value=-1,
+                ),
+                "aux_positions": pad_sequence(
+                    [item["aux_positions"] for item in batch],
+                    batch_first=True,
+                    padding_value=-1,
+                ),
+                "aux_rel_ids": pad_sequence(
+                    [item["aux_rel_ids"] for item in batch],
+                    batch_first=True,
+                    padding_value=-1,
+                ),
+            } | {
+                f"left_{i}": pad_sequence(
+                    [item[f"left_{i}"] for item in batch],
+                    batch_first=True,
+                    padding_value=-1,
+                ) for i in range(1, self.max_left+1)
+            } | {
+                f"right_{i}": pad_sequence(
+                    [item[f"right_{i}"] for item in batch],
+                    batch_first=True,
+                    padding_value=-1,
+                ) for i in range(1, self.max_right+1)
+            }
+
+        return output_dict

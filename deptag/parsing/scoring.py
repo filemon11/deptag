@@ -4,7 +4,8 @@ import numpy as np
 def las(predicted_heads: np.ndarray, predicted_deprels: np.ndarray,
         gold_heads: np.ndarray, gold_deprels: np.ndarray,
         gold_pos_tags: np.ndarray | None = None,
-        ignore_pos_tag_id: int | None = None) -> float:
+        ignore_pos_tag_id: int | None = None,
+        id2deprel=None) -> float:
     if ignore_pos_tag_id is not None:
         assert gold_pos_tags is not None
         gold_heads = gold_heads.copy()
@@ -35,6 +36,27 @@ def las(predicted_heads: np.ndarray, predicted_deprels: np.ndarray,
     gold_deprels = gold_deprels[gold_heads != -1]
 
     gold_heads = gold_heads[gold_heads != -1]
+
+    # TODO
+    # correct_head = predicted_heads == gold_heads
+    # print(
+    #     "dependency-label accuracy only for arcs "
+    #     "whose predicted head is correct",
+    #     (
+    #         predicted_deprels[correct_head]
+    #         == gold_deprels[correct_head]
+    #     ).mean()
+    # )
+
+    # for gold, pred in zip(
+    #         gold_deprels[correct_head],
+    #         predicted_deprels[correct_head],
+    # ):
+    #     print(
+    #         id2deprel[gold],
+    #         "->",
+    #         id2deprel[pred],
+    #     )
 
     return np.logical_and(
         predicted_heads == gold_heads,

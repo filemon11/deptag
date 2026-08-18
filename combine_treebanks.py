@@ -15,7 +15,7 @@ pathlib.Path(GOAL_DIR).mkdir(parents=True, exist_ok=True)
 SELECTION = (
     "Bulgarian-BTB",
     "Catalan-AnCora",
-    "Czech-PDTC",
+    "Czech-PDT",
     "German-GSD",
     "English-Atis",
     "Spanish-AnCora",
