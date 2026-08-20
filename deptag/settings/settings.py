@@ -51,7 +51,6 @@ class TaggingSettings:
     tol: int = 99999
     tag_vocab_path: str = "vocab"
     output_path: str = "models"
-    num_warmup_steps: int = 30
     use_tensorboard: bool = True
     eval_model_name: str = ""
     loss_ratio: float = 0.5
@@ -67,6 +66,8 @@ class TaggingSettings:
     deprels_from_supertags: bool = False
     k_supertag: int = 5
     k_head_scores: int = 5
+    t_arc: float = 1
+    t_sup: float = 1
 
 
 @dataclasses.dataclass(frozen=True)

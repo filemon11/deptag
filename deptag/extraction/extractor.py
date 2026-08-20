@@ -31,12 +31,30 @@ RawTag = tuple[Sequence[RawArc], RawArc | None, int]
 ProjectiveTag = tuple[list[str], list[str], Aux, str | None]
 
 
+def deprel_merge(
+        deprel: str,
+        deprel_to_new: Mapping[str, str],
+        merged_fallback_subtypes: bool,
+        distinguish_merged_fallback_subtypes: bool) -> str:
+    if deprel in deprel_to_new:
+        return deprel_to_new[deprel]
+    elif merged_fallback_subtypes and data.has_subtype(
+            deprel) and data.split_main_sub(
+                deprel)[0] in deprel_to_new:
+        main_type, subtype = data.split_main_sub(deprel)
+        main_type = deprel_to_new[main_type]
+        if distinguish_merged_fallback_subtypes:
+            return f"{main_type}:{subtype}"
+        return main_type
+    return deprel
+
+
 def collect_relations(
         sentence: conllu.TokenList,
         arguments: Collection[str],
         adjuncts: Collection[str],
         delete: Collection[str] = tuple(),
-        merged: Mapping[str, Collection[str]] | None = None,
+        deprel_to_new: Mapping[str, str] = {},
         *,
         without_labels: bool = False,
         distinguish_fallback_subtypes: bool = True,
@@ -47,27 +65,6 @@ def collect_relations(
     # (head_position, label) | None), ...]
     # ignores multiwords
     deprel: str
-
-    deprel_to_new: dict[str, str] | None = None
-    if merged is not None:
-        deprel_to_new = {}
-        for new, deprel_list in merged.items():
-            for deprel in deprel_list:
-                deprel_to_new[deprel] = new
-
-    def deprel_merge(deprel: str) -> str:
-        if deprel_to_new is not None:
-            if deprel in deprel_to_new:
-                return deprel_to_new[deprel]
-            elif merged_fallback_subtypes and data.has_subtype(
-                    deprel) and data.split_main_sub(
-                        deprel)[0] in deprel_to_new:
-                main_type, subtype = data.split_main_sub(deprel)
-                main_type = deprel_to_new[main_type]
-                if distinguish_merged_fallback_subtypes:
-                    return f"{main_type}:{subtype}"
-                return main_type
-        return deprel
 
     daughters: list[list[RawArc]] = [[] for _ in sentence]
     heads: list[RawArc | None] = [None]*len(sentence)
@@ -83,10 +80,19 @@ def collect_relations(
 
         if deprel in arguments:
             daughters[head_id].append(
-                (token_id, "" if without_labels else deprel_merge(deprel)))
+                (token_id, "" if without_labels else deprel_merge(
+                    deprel,
+                    deprel_to_new,
+                    merged_fallback_subtypes,
+                    distinguish_merged_fallback_subtypes)))
         elif deprel in adjuncts:
             heads[token_id] = (
-                head_id, "" if without_labels else deprel_merge(deprel))
+                head_id, "" if without_labels else deprel_merge(
+                    deprel,
+                    deprel_to_new,
+                    merged_fallback_subtypes,
+                    distinguish_merged_fallback_subtypes
+                ))
         elif deprel in delete:
             pass
         elif data.has_subtype(deprel):
@@ -97,10 +103,20 @@ def collect_relations(
             # TODO: give info about this if successful
             if deprel_main in arguments:
                 daughters[head_id].append(
-                    (token_id, "" if without_labels else deprel_merge(deprel)))
+                    (token_id, "" if without_labels else deprel_merge(
+                        deprel,
+                        deprel_to_new,
+                        merged_fallback_subtypes,
+                        distinguish_merged_fallback_subtypes
+                    )))
             elif deprel_main in adjuncts:
                 heads[token_id] = (
-                    head_id, "" if without_labels else deprel_merge(deprel))
+                    head_id, "" if without_labels else deprel_merge(
+                        deprel,
+                        deprel_to_new,
+                        merged_fallback_subtypes,
+                        distinguish_merged_fallback_subtypes
+                    ))
             elif deprel_main in delete:
                 pass
             else:
@@ -438,6 +454,12 @@ def extract(
     gap_counts_initial: Counter[int] = Counter()
     gap_counts_adjunct: Counter[int] = Counter()
 
+    deprel_to_new: dict[str, str] = {}
+    if merged is not None:
+        for new, deprel_list in merged.items():
+            for deprel in deprel_list:
+                deprel_to_new[deprel] = new
+
     for sentence in tqdm.tqdm(
             sentences, desc="Extracting supertags"):
         constituents = projectiveness.find_constituents(sentence.to_tree())
@@ -445,7 +467,7 @@ def extract(
 
         raw_relations = collect_relations(
             sentence, arguments, adjuncts, delete,
-            merged,
+            deprel_to_new,
             without_labels=without_labels,
             distinguish_fallback_subtypes=distinguish_fallback_subtypes,
             merged_fallback_subtypes=merged_fallback_subtypes,
@@ -486,6 +508,13 @@ def extract(
 
             # Associate supertags with word dict
             word_to_supertag_to_nums[token["form"]][string] += 1
+
+            # Merge deprels
+            token["deprel"] = deprel_merge(
+                token["deprel"],
+                deprel_to_new,
+                merged_fallback_subtypes,
+                distinguish_merged_fallback_subtypes)
 
         relative_tags |= set(relative_relations)
         for rel in relative_relations:

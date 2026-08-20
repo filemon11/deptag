@@ -12,6 +12,7 @@ import tqdm
 
 import multiprocessing
 
+from . import deprels
 from .. import extraction, utils
 
 from timeit import default_timer as timer
@@ -2775,7 +2776,7 @@ def process(
     (
         ma, ig, supertag_scores, predicted_pos,
         deprel2id, id2sup_relative, id2pos, root_sup_id, max_l, max_r,
-        k_head_scores, k_supertag) = inp
+        k_head_scores, k_supertag, t_arc) = inp
     ignore = ig == -1
     word_ignore = ignore[1:]
 
@@ -2792,7 +2793,7 @@ def process(
     ma = ma[~ignore][:, np.logical_or(
         ~ignore, prefix[0][:ma.shape[-1]])]
 
-    inpt = utils.neg_log10_softmax(ma)
+    inpt = utils.neg_log10_softmax(ma / t_arc)
 
     # Artificial root can only have itself as head.
     root_costs = np.full(
@@ -2869,7 +2870,7 @@ def process(
     head_result += head_result < 0
     head_result[0] = 0
     deprel_str_result: list[str] = backtracked[3]
-    # predicted_head_pos = predicted_pos[head_result[1:]]
+    predicted_head_pos = predicted_pos[head_result[1:]]
     # deprel_result = np.array([
     #     deprel2id[deprels.reconstruct(
     #         deprel, id2pos[dep_pos.item()], id2pos[head_pos.item()])]
@@ -3063,7 +3064,6 @@ def debug_advanced_item(
     )
 
 
-
 def chart(
         score_matrix: np.ndarray,
         ignore_deprels: np.ndarray,
@@ -3077,6 +3077,7 @@ def chart(
         root_sup_id: int,
         k_supertag: int = 10,
         k_head_scores: int = 10,
+        t_arc: float = 1,
         ) -> tuple[np.ndarray, np.ndarray]:
 
     start = timer()
@@ -3097,7 +3098,8 @@ def chart(
                 itertools.repeat(max_l),
                 itertools.repeat(max_r),
                 itertools.repeat(k_head_scores),
-                itertools.repeat(k_supertag))),  # [22:23],
+                itertools.repeat(k_supertag),
+                itertools.repeat(t_arc))),  # [22:23],
             desc="Chart parsing",
             total=score_matrix.shape[0]),
         chunksize=chunksize)

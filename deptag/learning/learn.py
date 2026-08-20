@@ -270,25 +270,21 @@ def initialize_model(
 
 
 def initialize_optimizer_and_scheduler(
-        model, num_batches_per_epoch, num_epochs=4,
-        num_warmup_steps=160, grad_acc: int = 1,
-        warmup_ratio: float = 0.1,
+        model, num_batches_per_epoch,
+        num_epochs=500,
+        grad_acc: int = 1,
+        warmup_epochs: int = 5,
         encoder_lr: float = 1e-5,
-        head_lr: float = 3e-4,
+        head_lr: float = 1e-4,
         weight_decay: float = 0.01,
         ):
     num_update_steps_per_epoch = math.ceil(
         num_batches_per_epoch / grad_acc
     )
 
-    num_training_steps = (
-        num_update_steps_per_epoch * num_epochs
+    num_warmup_steps = (
+        warmup_epochs * num_update_steps_per_epoch
     )
-
-    num_warmup_steps = round(
-        warmup_ratio * num_training_steps
-    )
-
     # no_decay = ['bias', 'LayerNorm.weight', 'layer_norm.weight']
 
     no_decay_param_ids = set()
@@ -430,7 +426,7 @@ def get_accuracies(
         arc_predictions, eval_arc_labels,
         deprel_predictions, eval_deprel_labels,
         factorised_predictions, eval_factorised_labels,
-        f_supertag_scores, printinfo: bool = True,
+        f_supertag_logps, printinfo: bool = True,
         *, k: int = 1):
     dev_sup_acc = None
     dev_pos_acc = None
@@ -472,10 +468,9 @@ def get_accuracies(
             typ=f_name, k=k, printinfo=printinfo
         )
 
-    # TODO: get log probs
-    if f_supertag_scores is not None:
+    if f_supertag_logps is not None:
         dev_sup_acc = func(
-            f_supertag_scores, eval_sup_labels, writer,
+            f_supertag_logps, eval_sup_labels, writer,
             use_tensorboard, n_iter,
             typ="sup", k=k, printinfo=printinfo)
 
@@ -565,7 +560,7 @@ def get_eval_metric(
         pos_predictions: np.ndarray | None,
         deprel_predictions: np.ndarray | None,
         factorised_predictions: Mapping[str, np.ndarray],
-        seen_supertag_scores: np.ndarray | None,
+        seen_supertag_logps: np.ndarray | None,
         eval_sup_labels: np.ndarray,
         eval_arc_labels: np.ndarray | None,
         eval_deprel_labels: np.ndarray | None,
@@ -582,6 +577,8 @@ def get_eval_metric(
         max_r: int,
         k_supertag: int,
         k_head_scores: int,
+        t_sup: float = 1,
+        t_arc: float = 1,
         ) -> float:
     eval_metric: float
     match eval_metric_type:
@@ -599,7 +596,7 @@ def get_eval_metric(
             chart_id2sup_relative: Mapping[int, extraction.RelativeTag]
             if factorised == "complete":
                 argument_logps = {
-                    f_name: -utils.neg_log10_softmax(f_pred)
+                    f_name: -utils.neg_log10_softmax(f_pred / t_sup)
                     for f_name, f_pred in
                     factorised_predictions.items() if
                     f_name.startswith("left") or
@@ -608,13 +605,13 @@ def get_eval_metric(
                 candidates = factorisation.top_k_valid_supertags_batch(
                     argument_logps,
                     -utils.neg_log10_softmax(
-                        factorised_predictions["l_arg_nums"]),
+                        factorised_predictions["l_arg_nums"] / t_sup),
                     -utils.neg_log10_softmax(
-                        factorised_predictions["r_arg_nums"]),
+                        factorised_predictions["r_arg_nums"] / t_sup),
                     -utils.neg_log10_softmax(
-                        factorised_predictions["aux_positions"]),
+                        factorised_predictions["aux_positions"] / t_sup),
                     -utils.neg_log10_softmax(
-                        factorised_predictions["aux_rel_ids"]),
+                        factorised_predictions["aux_rel_ids"] / t_sup),
                     id2deprel,
                     max_l, max_r, k=k_supertag,
                     projective_only=True,
@@ -641,11 +638,11 @@ def get_eval_metric(
                     -factorisation.score_structural_supertags_batch(
                         valid_factors,
                         -utils.neg_log10_softmax(
-                            factorised_predictions["l_arg_nums"]),
+                            factorised_predictions["l_arg_nums"] / t_sup),
                         -utils.neg_log10_softmax(
-                            factorised_predictions["r_arg_nums"]),
+                            factorised_predictions["r_arg_nums"] / t_sup),
                         -utils.neg_log10_softmax(
-                            factorised_predictions["aux_positions"]),
+                            factorised_predictions["aux_positions"] / t_sup),
                     ))
                 assert valid_id2sup is not None
                 assert valid_id2sup_relative is not None
@@ -656,9 +653,10 @@ def get_eval_metric(
                 chart_deprel_dict = {"_": 0, "dep": 0, "root": 0}
                 root_sup_id = chart_sup2id["*+_"]
             elif factorised == "seen":
-                assert seen_supertag_scores is not None
-                supertag_scores = utils.neg_log10_softmax(
-                    seen_supertag_scores)
+                assert seen_supertag_logps is not None
+                supertag_scores = -seen_supertag_logps
+                # supertag_scores = utils.neg_log10_softmax(
+                #     seen_supertag_scores / t_sup)
                 chart_id2sup = id2sup
                 chart_id2sup_relative = id2sup_relative
 
@@ -666,7 +664,8 @@ def get_eval_metric(
                 root_sup_id = sup2id[root_supertag]
             else:
                 assert sup_predictions is not None
-                supertag_scores = utils.neg_log10_softmax(sup_predictions)
+                supertag_scores = utils.neg_log10_softmax(
+                    sup_predictions / t_sup)
                 chart_id2sup = id2sup
                 chart_id2sup_relative = id2sup_relative
                 chart_deprel_dict = deprel2id
@@ -686,6 +685,7 @@ def get_eval_metric(
                 root_sup_id=root_sup_id,
                 k_supertag=k_supertag,
                 k_head_scores=k_head_scores,
+                t_arc=t_arc
             )
 
             assert eval_deprel_labels is not None
@@ -809,7 +809,8 @@ def train_command(args: settings.Settings):
         order_relations=args.deprels.order_relations,
         )
 
-    logging.info("Preparing Data")
+    logging.info(f"Loaded {len(train_data)} training sentences.")
+    logging.info(f"Loaded {len(dev_data)} evaluation sentences.")
     train_dataset, dev_dataset, train_dataloader, dev_dataloader = (
         prepare_training_data(
             train_data, dev_data, prefix,
@@ -860,8 +861,10 @@ def train_command(args: settings.Settings):
     train_set_size = len(train_dataloader)
     optimizer, scheduler, num_training_steps = (
         initialize_optimizer_and_scheduler(
-            model, train_set_size, args.tagging.epochs,
-            args.tagging.num_warmup_steps, args.tagging.grad_acc,
+            model,
+            num_batches_per_epoch=train_set_size,
+            num_epochs=args.tagging.epochs,
+            grad_acc=args.tagging.grad_acc,
             # args.tagging.encoder_lr, args.tagging.head_lr
         )
     )
@@ -966,6 +969,8 @@ def train_command(args: settings.Settings):
     # TODO: change
     k_supertag = args.tagging.k_supertag
     k_head_scores = args.tagging.k_head_scores
+    t_sup: float = args.tagging.t_sup
+    t_arc: float = args.tagging.t_arc
 
     for epo in tqdm.tqdm(range(epo, args.tagging.epochs)):
         # if (epo+1) % freeze_factor == 0:
@@ -1138,22 +1143,22 @@ def train_command(args: settings.Settings):
                 )
                 # [B, D, L]
 
-            f_supertag_scores = None
+            seen_supertag_logps = None
             if args.tagging.factorised in ("seen", "complete"):
                 assert seen_factors is not None
-                f_supertag_scores = factorisation.score_supertags_batch(
+                seen_supertag_logps = factorisation.score_supertags_batch(
                     seen_factors,
                     {
-                        f_name: -utils.neg_log10_softmax(f_pred)
+                        f_name: -utils.neg_log10_softmax(f_pred / t_sup)
                         for f_name, f_pred in factorised_predictions.items()},
                     -utils.neg_log10_softmax(
-                        factorised_predictions["l_arg_nums"]),
+                        factorised_predictions["l_arg_nums"] / t_sup),
                     -utils.neg_log10_softmax(
-                        factorised_predictions["r_arg_nums"]),
+                        factorised_predictions["r_arg_nums"] / t_sup),
                     -utils.neg_log10_softmax(
-                        factorised_predictions["aux_positions"]),
+                        factorised_predictions["aux_positions"] / t_sup),
                     -utils.neg_log10_softmax(
-                        factorised_predictions["aux_rel_ids"]),
+                        factorised_predictions["aux_rel_ids"] / t_sup),
                 )
             (
                 dev_sup_acc, dev_pos_acc, dev_arc_acc,
@@ -1165,7 +1170,7 @@ def train_command(args: settings.Settings):
                     arc_predictions, eval_arc_labels,
                     deprel_predictions_, eval_deprel_labels,
                     factorised_predictions, eval_factorised_labels,
-                    f_supertag_scores=f_supertag_scores, printinfo=False,
+                    f_supertag_logps=seen_supertag_logps, printinfo=False,
                     )
             )
 
@@ -1220,7 +1225,7 @@ def train_command(args: settings.Settings):
                 pos_predictions=pos_predictions,
                 deprel_predictions=deprel_predictions,
                 factorised_predictions=factorised_predictions,
-                seen_supertag_scores=f_supertag_scores,
+                seen_supertag_logps=seen_supertag_logps,
                 eval_sup_labels=eval_labels,
                 eval_arc_labels=eval_arc_labels,
                 eval_deprel_labels=eval_deprel_labels,
@@ -1237,6 +1242,8 @@ def train_command(args: settings.Settings):
                 max_r=max_r,
                 k_supertag=k_supertag,
                 k_head_scores=k_head_scores,
+                t_arc=t_arc,
+                t_sup=t_sup,
             )
 
             writer.add_scalar(
@@ -1302,7 +1309,8 @@ def train_command(args: settings.Settings):
                 _finish_training(
                     model, sup2id, dev_dataloader,
                     dev_dataset, run_name, writer, args.tagging,
-                    n_iter, args.tagging.factorised, seen_factors)
+                    n_iter, args.tagging.factorised, seen_factors,
+                    t_sup=t_sup)
                 return
             # end of epoch
 
@@ -1317,7 +1325,8 @@ def train_command(args: settings.Settings):
     _finish_training(
         model, sup2id, dev_dataloader, dev_dataset,
         run_name, writer, args.tagging, n_iter,
-        args.tagging.factorised, seen_factors)
+        args.tagging.factorised, seen_factors,
+        t_sup=t_sup)
 
 
 def _save_model(
@@ -1374,7 +1383,8 @@ def _finish_training(
         n_iter: int,
         factorised: Literal[
             "seen", "complete", "structural", False],
-        seen_factors: factorisation.SupertagFactors | None = None):
+        seen_factors: factorisation.SupertagFactors | None = None,
+        t_sup: float = 1):
 
     (
         predictions, eval_labels,
@@ -1388,22 +1398,22 @@ def _finish_training(
             len(sup2id), args.batch_size,
             device))
 
-    f_supertag_scores = None
+    seen_supertag_logps = None
     if factorised in ("seen", "complete"):
         assert seen_factors is not None
-        f_supertag_scores = factorisation.score_supertags_batch(
+        seen_supertag_logps = factorisation.score_supertags_batch(
             seen_factors,
             {
-                f_name: -utils.neg_log10_softmax(f_pred)
+                f_name: -utils.neg_log10_softmax(f_pred / t_sup)
                 for f_name, f_pred in factorised_predictions.items()},
             -utils.neg_log10_softmax(
-                factorised_predictions["l_arg_nums"]),
+                factorised_predictions["l_arg_nums"] / t_sup),
             -utils.neg_log10_softmax(
-                factorised_predictions["r_arg_nums"]),
+                factorised_predictions["r_arg_nums"] / t_sup),
             -utils.neg_log10_softmax(
-                factorised_predictions["aux_positions"]),
+                factorised_predictions["aux_positions"] / t_sup),
             -utils.neg_log10_softmax(
-                factorised_predictions["aux_rel_ids"]),
+                factorised_predictions["aux_rel_ids"] / t_sup),
         )
 
     sup_acc, pos_acc, arc_acc, deprel_acc, dev_factorised_accs = (
@@ -1414,7 +1424,7 @@ def _finish_training(
             arc_predictions, eval_arc_labels,
             deprel_predictions, eval_deprel_labels,
             factorised_predictions, eval_factorised_labels,
-            f_supertag_scores,
+            seen_supertag_logps,
             printinfo=False
             )
     )
@@ -1432,7 +1442,7 @@ def evaluate_command(args: settings.Settings, k: int = 1):
     print("Evaluation Args", args)
     prefix: str = args.file.conllu_file
 
-    test_reader = data.load_conllu(prefix, "test", dir=data_path)
+    test_reader = data.load_conllu(prefix, "dev", dir=data_path)
     test_data = extraction.prepare(
         test_reader,
         arguments=args.deprels.arguments,
@@ -1560,22 +1570,26 @@ def evaluate_command(args: settings.Settings, k: int = 1):
             eval_arc_labels,
         )
         # [B, D, L]
-    f_supertag_scores = None
+
+    t_sup: float = args.tagging.t_sup
+    t_arc: float = args.tagging.t_arc
+
+    seen_supertag_logps = None
     if args.tagging.factorised in ("seen", "complete"):
         assert seen_factors is not None
-        f_supertag_scores = factorisation.score_supertags_batch(
+        seen_supertag_logps = factorisation.score_supertags_batch(
             seen_factors,
             {
-                f_name: -utils.neg_log10_softmax(f_pred)
+                f_name: -utils.neg_log10_softmax(f_pred / t_sup)
                 for f_name, f_pred in factorised_predictions.items()},
             -utils.neg_log10_softmax(
-                factorised_predictions["l_arg_nums"]),
+                factorised_predictions["l_arg_nums"] / t_sup),
             -utils.neg_log10_softmax(
-                factorised_predictions["r_arg_nums"]),
+                factorised_predictions["r_arg_nums"] / t_sup),
             -utils.neg_log10_softmax(
-                factorised_predictions["aux_positions"]),
+                factorised_predictions["aux_positions"] / t_sup),
             -utils.neg_log10_softmax(
-                factorised_predictions["aux_rel_ids"]),
+                factorised_predictions["aux_rel_ids"] / t_sup),
         )
     (
         dev_sup_accs, dev_pos_accs, dev_arc_accs,
@@ -1587,7 +1601,7 @@ def evaluate_command(args: settings.Settings, k: int = 1):
             arc_predictions, eval_arc_labels,
             deprel_predictions_, eval_deprel_labels,
             factorised_predictions, eval_factorised_labels,
-            f_supertag_scores,
+            seen_supertag_logps,
             k=k, printinfo=False
             )
     )
@@ -1627,6 +1641,7 @@ def evaluate_command(args: settings.Settings, k: int = 1):
             print(
                 f"{f_name}_acc k={k}:", f_dev_accs)
 
+    assert eval_labels is not None
     eval_metric: float = get_eval_metric(
         args.tagging.eval_metric,
         args.tagging.factorised,
@@ -1637,7 +1652,7 @@ def evaluate_command(args: settings.Settings, k: int = 1):
         pos_predictions=pos_predictions,
         deprel_predictions=deprel_predictions,
         factorised_predictions=factorised_predictions,
-        seen_supertag_scores=f_supertag_scores,
+        seen_supertag_logps=seen_supertag_logps,
         eval_sup_labels=eval_labels,
         eval_arc_labels=eval_arc_labels,
         eval_deprel_labels=eval_deprel_labels,
@@ -1654,6 +1669,8 @@ def evaluate_command(args: settings.Settings, k: int = 1):
         max_r=max_r,
         k_supertag=args.tagging.k_supertag,
         k_head_scores=args.tagging.k_head_scores,
+        t_arc=t_arc,
+        t_sup=t_sup,
     )
 
     print(
