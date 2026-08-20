@@ -1442,7 +1442,7 @@ def evaluate_command(args: settings.Settings, k: int = 1):
     print("Evaluation Args", args)
     prefix: str = args.file.conllu_file
 
-    test_reader = data.load_conllu(prefix, "dev", dir=data_path)
+    test_reader = data.load_conllu(prefix, "test", dir=data_path)
     test_data = extraction.prepare(
         test_reader,
         arguments=args.deprels.arguments,
