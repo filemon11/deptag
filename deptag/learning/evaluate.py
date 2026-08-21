@@ -529,19 +529,24 @@ def calc_tag_accuracy_k(
         printinfo: bool = True,
         ) -> float:
 
-    if k == 1:
-        predictions = predictions[eval_labels != -1].argmax(-1)
+    mask = eval_labels != -1
+    eval_labels = eval_labels[mask]
+    predictions = predictions[mask]
 
-        eval_labels = eval_labels[eval_labels != -1]
+    if len(eval_labels) == 0:
+        return float("nan")
 
+    n_classes = predictions.shape[-1]
+    k_eff = min(k, n_classes)
+
+    if k_eff == 1:
+        predictions = predictions.argmax(-1)
         acc = (predictions == eval_labels).mean()
 
     else:
         predictions = np.argpartition(
-            predictions[eval_labels != -1], -k, axis=-1)[..., -k:]
+            predictions, -k, axis=-1)[..., -k:]
         # predictions = np.top_k(predictions[eval_labels != -1], k=k, dim=-1)
-
-        eval_labels = eval_labels[eval_labels != -1]
 
         acc = (predictions == eval_labels[..., None]).any(-1).mean()
 

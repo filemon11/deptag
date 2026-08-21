@@ -1510,7 +1510,8 @@ def evaluate_command(args: settings.Settings, k: int = 1):
     model.load_state_dict(
         torch.load(
             pathlib.Path(
-                args.tagging.output_path) / args.tagging.eval_model_name))
+                args.tagging.output_path) / args.tagging.eval_model_name),
+        strict=False)
     model.to(device)
 
     seen_factors = None
