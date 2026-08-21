@@ -545,14 +545,14 @@ def calc_tag_accuracy_k(
 
     else:
         predictions = np.argpartition(
-            predictions, -k, axis=-1)[..., -k:]
+            predictions, -k_eff, axis=-1)[..., -k_eff:]
         # predictions = np.top_k(predictions[eval_labels != -1], k=k, dim=-1)
 
         acc = (predictions == eval_labels[..., None]).any(-1).mean()
 
     if printinfo:
         label = f"{typ}_accuracy"
-        logging.info('{} {} best: {}'.format(label, k, acc))
+        logging.info('{} {} best: {}'.format(label, k_eff, acc))
 
     return acc
 
