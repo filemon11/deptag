@@ -92,7 +92,9 @@ class ModelForTagging(nn.Module):
         # self.parse_layer = config.task_specific_params["parse_layer"]
         self.pos_mix = LayerMix(config.num_hidden_layers)
         self.arc_mix = LayerMix(config.num_hidden_layers)
-        self.rel_mix = LayerMix(config.num_hidden_layers)
+        self.rel_mix = None
+        if config.task_specific_params["mlp_lab_hidden"] is not None:
+            self.rel_mix = LayerMix(config.num_hidden_layers)
 
         self.sup_mix = None
         self.sup_arg_mix = None
@@ -231,7 +233,9 @@ class ModelForTagging(nn.Module):
         # num_layers = len(outputs["hidden_states"])-1
         # token_repr_parse = outputs["hidden_states"][self.parse_layer]
         token_repr_arc = self.arc_mix(outputs["hidden_states"])
-        token_repr_rel = self.rel_mix(outputs["hidden_states"])
+        token_repr_rel = None
+        if self.rel_mix is not None:
+            token_repr_rel = self.rel_mix(outputs["hidden_states"])
 
         token_repr_sup = None
         token_repr_sup_arg = None
@@ -251,12 +255,14 @@ class ModelForTagging(nn.Module):
             )
         )
 
-        word_repr_rel, _ = (
-            self._gather_word_representations(
-                token_repr_rel,
-                word_end_positions,
+        word_repr_rel = None
+        if token_repr_rel is not None:
+            word_repr_rel, _ = (
+                self._gather_word_representations(
+                    token_repr_rel,
+                    word_end_positions,
+                )
             )
-        )
 
         word_repr_sup = None
         word_repr_sup_arg = None
@@ -264,6 +270,7 @@ class ModelForTagging(nn.Module):
 
         if self.factorised is not False:
             assert token_repr_sup_arg is not None
+            assert token_repr_sup_head is not None
             word_repr_sup_arg, _ = (
                 self._gather_word_representations(
                     token_repr_sup_arg,
@@ -277,6 +284,7 @@ class ModelForTagging(nn.Module):
                 )
             )
         else:
+            assert token_repr_sup is not None
             word_repr_sup, _ = (
                 self._gather_word_representations(
                     token_repr_sup,
@@ -394,10 +402,12 @@ class ModelForTagging(nn.Module):
                 dim=1,
             )
 
-            parse_repr_rel = torch.cat(
-                [root_rel, word_repr_rel],
-                dim=1,
-            )
+            parse_repr_rel = None
+            if word_repr_rel is not None:
+                parse_repr_rel = torch.cat(
+                    [root_rel, word_repr_rel],
+                    dim=1,
+                )
 
             root_mask = torch.ones(
                 (word_mask.shape[0], 1),

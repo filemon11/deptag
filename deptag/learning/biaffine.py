@@ -1,14 +1,10 @@
 import torch
 from torch import nn
 from numpy import prod
-from torch.nn.utils.rnn import pad_sequence
 import torch.nn.functional as F
 
-from . import losses
-
-from typing import Self
-
-# Source: https://github.com/daandouwe/biaffine-dependency-parser/blob/master/model.py
+# Source:
+# https://github.com/daandouwe/biaffine-dependency-parser/blob/master/model.py
 # changes made
 
 
@@ -106,19 +102,22 @@ class BiAffineParser(nn.Module):
 
     # @torch.compile()
     def forward(
-            self, h_arc: torch.Tensor, h_lab: torch.Tensor, *args, **kwargs
+            self, h_arc: torch.Tensor | None, h_lab: torch.Tensor | None,
+            *args, **kwargs
             ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         """Compute the score matrices for the arcs and labels."""
 
         arc_h = None
         arc_d = None
         if self.arc_mlp_h is not None and self.arc_mlp_d is not None:
+            assert h_arc is not None
             arc_h = self.arc_mlp_h(h_arc).contiguous()
             arc_d = self.arc_mlp_d(h_arc).contiguous()
 
         lab_h = None
         lab_d = None
         if self.lab_mlp_h is not None and self.lab_mlp_d is not None:
+            assert h_lab is not None
             lab_h = self.lab_mlp_h(h_lab).contiguous()
             lab_d = self.lab_mlp_d(h_lab).contiguous()
 
@@ -131,32 +130,6 @@ class BiAffineParser(nn.Module):
             S_lab = self.lab_biaffine(lab_h, lab_d).contiguous()
 
         return S_arc, S_lab
-
-    # @torch.compile()
-    # def arc_loss(
-    #         self, S_arc: torch.Tensor, heads: torch.Tensor,
-    #         attention_mask: torch.Tensor,
-    #         printinfo: bool = False):
-    #     """Compute the loss for the arc predictions."""
-    #     valid_head = torch.cat(
-    #         (
-    #             torch.ones_like(heads[:, :1], dtype=torch.bool),
-    #             heads[:, 1:].ne(-1),
-    #         ),
-    #         dim=1,
-    #     )
-
-    #     masked_scores = S_arc.contiguous().masked_fill(
-    #         ~valid_head.unsqueeze(-1),
-    #         float("-inf"),
-    #     )
-
-    #     return F.cross_entropy(
-    #         masked_scores,
-    #         heads.long(),
-    #         ignore_index=-1,
-    #         reduction="mean",
-    #     )
 
     def arc_loss(
             self,

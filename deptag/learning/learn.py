@@ -282,6 +282,10 @@ def initialize_optimizer_and_scheduler(
         num_batches_per_epoch / grad_acc
     )
 
+    num_training_steps = (
+        num_update_steps_per_epoch * num_epochs
+    )
+
     num_warmup_steps = (
         warmup_epochs * num_update_steps_per_epoch
     )
@@ -1279,8 +1283,9 @@ def train_command(args: settings.Settings):
                 model.pos_mix.weights, dim=0).tolist())
             print("arc mix:", torch.softmax(
                 model.arc_mix.weights, dim=0).tolist())
-            print("rel mix:", torch.softmax(
-                model.rel_mix.weights, dim=0).tolist())
+            if model.rel_mix is not None:
+                print("rel mix:", torch.softmax(
+                    model.rel_mix.weights, dim=0).tolist())
             if model.sup_mix is not None:
                 print("sup mix:", torch.softmax(
                     model.sup_mix.weights, dim=0).tolist())

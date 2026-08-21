@@ -414,7 +414,10 @@ def predict(
             deprel_predictions_ = np.concatenate([
                 np.pad(
                     deprel_logits,
-                    ((0, 0), (0, max_parse_len - deprel_logits.shape[1]), (0, 0)),
+                    (
+                        (0, 0),
+                        (0, max_parse_len - deprel_logits.shape[1]),
+                        (0, 0)),
                     'constant', constant_values=0)
                 for deprel_logits in deprel_predictions], axis=0)
     else:
@@ -543,17 +546,7 @@ def calc_tag_accuracy_k(
         acc = (predictions == eval_labels[..., None]).any(-1).mean()
 
     if printinfo:
-        label = ""
-        if typ == "pos":
-            label = 'pos_tags_accuracy'
-        elif typ == "sup":
-            label = 'sup_tags_accuracy'
-        elif typ == "arc":
-            label = 'arc_accuracy'
-        elif typ == "deprel":
-            label = 'deprel_accuracy'
-        else:
-            label = f"{typ}_accuracy"
+        label = f"{typ}_accuracy"
         logging.info('{} {} best: {}'.format(label, k, acc))
 
     return acc
