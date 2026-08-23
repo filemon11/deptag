@@ -12,7 +12,6 @@ import tqdm
 
 import multiprocessing
 
-from . import deprels
 from .. import extraction, utils
 
 from timeit import default_timer as timer
@@ -2863,14 +2862,14 @@ def process(
         #         raise Exception
         backtracked = system.backtrack(result[0], result[1])
 
-    predicted_pos = np.concatenate(
-        (predicted_pos[0, np.newaxis], predicted_pos[~word_ignore]))
+    # predicted_pos = np.concatenate(
+    #     (predicted_pos[0, np.newaxis], predicted_pos[~word_ignore]))
 
     head_result = np.array(backtracked[0], dtype=int)-1
     head_result += head_result < 0
     head_result[0] = 0
     deprel_str_result: list[str] = backtracked[3]
-    predicted_head_pos = predicted_pos[head_result[1:]]
+    # predicted_head_pos = predicted_pos[head_result[1:]]
     # deprel_result = np.array([
     #     deprel2id[deprels.reconstruct(
     #         deprel, id2pos[dep_pos.item()], id2pos[head_pos.item()])]
@@ -3071,7 +3070,7 @@ def chart(
         id2sup_relative: Mapping[int, extraction.RelativeTag],
         id2pos: Mapping[int, str],
         deprel2id: Mapping[str, int],
-        predicted_pos_ids: np.ndarray,
+        predicted_pos_ids: np.ndarray | None,
         max_l: int,
         max_r: int,
         root_sup_id: int,
@@ -3090,7 +3089,9 @@ def chart(
                 score_matrix,
                 ignore_deprels,
                 supertag_scores,
-                predicted_pos_ids,
+                (
+                    predicted_pos_ids if predicted_pos_ids is not None
+                    else itertools.repeat(None)),
                 itertools.repeat(deprel2id),
                 itertools.repeat(id2sup_relative),
                 itertools.repeat(id2pos),

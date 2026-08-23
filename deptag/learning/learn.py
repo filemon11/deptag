@@ -204,7 +204,7 @@ def generate_config(
 
         "pos_emb_dim": 256,
         "num_pos_tags": num_pos_tags,
-        "dropout": 0.3,
+        "dropout": 0.2,
         "use_pos": False,
 
         "n_heads": config.num_attention_heads,
@@ -594,7 +594,7 @@ def get_eval_metric(
 
             assert arc_predictions is not None
             assert eval_arc_labels is not None
-            assert pos_predictions is not None
+            # assert pos_predictions is not None
 
             chart_id2sup: Mapping[int, str]
             chart_id2sup_relative: Mapping[int, extraction.RelativeTag]
@@ -683,7 +683,8 @@ def get_eval_metric(
                 chart_id2sup_relative,
                 id2pos,
                 chart_deprel_dict,
-                pos_predictions.argmax(-1),
+                pos_predictions.argmax(
+                    -1) if pos_predictions is not None else None,
                 max_l,
                 max_r,
                 root_sup_id=root_sup_id,
@@ -823,8 +824,8 @@ def train_command(args: settings.Settings):
 
     id2sup = {i: sup for sup, i in sup2id.items()}
     id2sup_relative = {
-        i: extraction.convert_string_to_relative_relation(tag)
-        for i, tag in id2sup.items()}
+        i: extraction.convert_string_to_relative_relation(sup)
+        for i, sup in id2sup.items()}
 
     id2relative_sup: dict[
         int, None | extraction.ProjectiveTag]

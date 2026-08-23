@@ -214,6 +214,7 @@ class TaggingDataset(torch.utils.data.Dataset):
         for sent in self.trees:
             for _, x, _, _, _ in sent:
                 pos_dict[x] = pos_dict.get(x, len(pos_dict))
+        pos_dict["UNK"] = len(pos_dict)
         return pos_dict
 
     def get_deprel_dict(self):
@@ -224,6 +225,7 @@ class TaggingDataset(torch.utils.data.Dataset):
                 if data.has_subtype(x):
                     x = data.split_main_sub(x)[0]
                 deprel_dict[x] = deprel_dict.get(x, len(deprel_dict))
+        deprel_dict["UNK"] = len(deprel_dict)
         return deprel_dict
 
     def __len__(self):
@@ -240,10 +242,11 @@ class TaggingDataset(torch.utils.data.Dataset):
             [word[3] for word in sent], dtype=torch.long)  # - 1
         # use BOS token as root
 
-        pos_tags = [self.pos_dict.get(w[1], 0) for w in sent]
+        pos_tags = [self.pos_dict.get(
+            w[1], self.pos_dict["UNK"]) for w in sent]
         deprel_tags = [self.deprel_dict.get(
             data.split_main_sub(w[4])[0] if data.has_subtype(w[4]) else w[4],
-            0) for w in sent]
+            self.deprel_dict["UNK"]) for w in sent]
 
         # encoded = self.tokenizer._encode_plus(' '.join(words))
         # word_end_positions = [
@@ -259,7 +262,9 @@ class TaggingDataset(torch.utils.data.Dataset):
         # deprel_ids = torch.full_like(input_ids, -1)
 
         tag_ids_: list[int] = [
-            (self.tag_system[w[2]] if w[2] in self.tag_system else 0)
+            (
+                self.tag_system[w[2]] if w[2] in self.tag_system
+                else self.tag_system["-UNK*"])
             for w in sent]
 
         tag_ids = torch.tensor(tag_ids_, dtype=torch.long)
@@ -279,7 +284,8 @@ class TaggingDataset(torch.utils.data.Dataset):
                 for tag in factorised_tags]
             l_arg_ids = [
                 [(self.deprel_dict.get(
-                    deprel, 0) if deprel is not None else -1)
+                    deprel, self.deprel_dict["UNK"])
+                    if deprel is not None else -1)
                     for deprel in word]
                 for word in l_args]
             # TODO: these must be passed individually
@@ -289,7 +295,8 @@ class TaggingDataset(torch.utils.data.Dataset):
                 for tag in factorised_tags]
             r_arg_ids = [
                 [(self.deprel_dict.get(
-                    deprel, 0) if deprel is not None else -1)
+                    deprel, self.deprel_dict["UNK"])
+                    if deprel is not None else -1)
                     for deprel in word]
                 for word in r_args]
             aux_positions = [
@@ -298,7 +305,9 @@ class TaggingDataset(torch.utils.data.Dataset):
             # maximum is 2 + max_left + max_right
 
             aux_rel_ids = [
-                (self.deprel_dict.get(tag[5], 0) if tag is not None else -1)
+                (
+                    self.deprel_dict.get(tag[5], self.deprel_dict["UNK"])
+                    if tag is not None else -1)
                 for tag in factorised_tags]
 
             left_dict = {

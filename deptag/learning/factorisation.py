@@ -251,6 +251,9 @@ def preprocess_supertags(
     )
 
     for supertag, tag_id in supertag2id.items():
+        if supertag == "UNK":
+            continue
+
         tag = factor_supertag(
             supertag,
             max_l,
