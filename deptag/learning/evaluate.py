@@ -202,12 +202,7 @@ def predict(
         #     if deprels_matrix:
         #         deprel_predictions.append(
         #             outputs[7].permute(0, 3, 2, 1).float().cpu().numpy())
-        #     else:        if outputs[3] is not None:
-            pos_logits = outputs[3].float().cpu().numpy()
-            pos_predictions.append(pos_logits)
-            max_len = max(max_len, pos_logits.shape[1])
-            pos_labels = batch['pos_ids'].int().cpu().numpy()
-            eval_pos_labels.append(pos_labels)
+        #     else:
         #         # heads with index -1 are padding and are treated as
         #         # index 0 here (to be disregarded later)
         #         # print(heads[1])
