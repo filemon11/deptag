@@ -1264,7 +1264,7 @@ def train_command(args: settings.Settings):
                 logging.info("current supertag acc {}".format(dev_sup_acc))
             for f_name, f_dev_acc in dev_factorised_accs.items():
                 logging.info("current {} acc {}".format(f_name, f_dev_acc))
-            if dev_pos_acc is not None:
+            if eval_metric is not None:
                 logging.info("eval metric {}".format(eval_metric))
             logging.info("last metric {}".format(last_metric))
             logging.info("best metric {}".format(best_metric))
