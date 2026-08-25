@@ -1093,6 +1093,21 @@ def train_command(args: settings.Settings):
                     report_loss=True,
                     deprels_matrix=True)
             )
+
+            num_losses = 0
+            if dev_sup_loss is not None:
+                num_losses += 1
+            if dev_arc_loss is not None:
+                num_losses += 1
+            if dev_pos_loss is not None:
+                num_losses += 1
+            if dev_deprel_loss is not None:
+                num_losses += 1
+            if dev_factorised_losses is not None:
+                for f_loss in dev_factorised_losses.values():
+                    num_losses += 1
+            dev_loss /= num_losses
+
             if args.tagging.use_tensorboard:
                 assert writer is not None
                 writer.add_scalar(
