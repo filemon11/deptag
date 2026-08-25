@@ -6,13 +6,15 @@ import torch.nn.functional as F
 def calc_loss_helper(
         logits: torch.Tensor, labels: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
+        label_smoothing: float = 0.0,
         printinfo: bool = False):
     # shape: (batch_size, seq_len, num_tags) -> (batch_size, num_tags, seq_len)
     logits = torch.movedim(logits, -1, 1)
 
     if (labels != -1).any().item():
         loss = F.cross_entropy(
-            logits, labels, ignore_index=-1, reduction="mean")
+            logits, labels, ignore_index=-1, reduction="mean",
+            label_smoothing=label_smoothing)
     else:
         loss = torch.tensor(0, dtype=logits.dtype, device=logits.device)
 

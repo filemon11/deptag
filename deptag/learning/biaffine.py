@@ -136,6 +136,7 @@ class BiAffineParser(nn.Module):
             S_arc: torch.Tensor,
             heads: torch.Tensor,
             head_mask: torch.Tensor,
+            label_smoothing: float = 0.0,
             printinfo: bool = False,
             ):
         """Compute arc loss.
@@ -153,6 +154,56 @@ class BiAffineParser(nn.Module):
             This includes the artificial root.
         """
 
+        if label_smoothing > 0:
+            masked_scores = S_arc.masked_fill(
+                ~head_mask.unsqueeze(-1),
+                float("-inf"),
+            )
+
+            log_probs = F.log_softmax(
+                masked_scores,
+                dim=1,
+            )  # [B, H, D]
+
+            valid_dep = heads != -1
+
+            safe_heads = heads.clamp_min(0).long()
+
+            # Standard NLL for the gold head.
+            gold_logp = torch.gather(
+                log_probs,
+                dim=1,
+                index=safe_heads.unsqueeze(1),
+            ).squeeze(1)  # [B, D]
+
+            nll = -gold_logp
+
+            # Smoothing loss over VALID head classes only.
+            #
+            # Do not multiply -inf by 0, because that gives NaN.
+            valid_log_probs = torch.where(
+                head_mask.unsqueeze(-1),
+                log_probs,
+                0.0,
+            )
+
+            num_valid_heads = head_mask.sum(
+                dim=1,
+                keepdim=True,
+            )  # [B, 1]
+
+            smooth_loss = (
+                -valid_log_probs.sum(dim=1)
+                / num_valid_heads
+            )  # [B, D]
+
+            loss = (
+                (1.0 - label_smoothing) * nll
+                + label_smoothing * smooth_loss
+            )
+
+            return loss[valid_dep].mean()
+
         # Mask padded WORD positions as candidate heads.
         #
         # [B, H] -> [B, H, 1], broadcasting over dependents.
@@ -166,11 +217,13 @@ class BiAffineParser(nn.Module):
             heads.long(),
             ignore_index=-1,
             reduction="mean",
+            label_smoothing=label_smoothing,
         )
 
     def lab_loss(
             self, S_lab, heads, labels,
-            attention_mask: torch.Tensor | None = None,
+            mask: torch.Tensor | None = None,
+            label_smoothing: float = 0.0,
             printinfo: bool = False):
         """Compute the loss for the label predictions
         on the gold arcs (heads)."""
@@ -193,6 +246,7 @@ class BiAffineParser(nn.Module):
             labels.long(),
             ignore_index=-1,
             reduction="mean",
+            label_smoothing=label_smoothing
         )
 
     @property
