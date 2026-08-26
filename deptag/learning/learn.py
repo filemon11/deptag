@@ -78,8 +78,8 @@ def save_vocab(args: settings.Settings):
 
 
 def prepare_training_data(
-        train_data: Sequence[Sequence[tuple[str, str, str, int, str]]],
-        eval_data: Sequence[Sequence[tuple[str, str, str, int, str]]],
+        train_data: Sequence[Sequence[extraction.Token]],
+        eval_data: Sequence[Sequence[extraction.Token]],
         dataset_name: str,
         tag_system: Mapping[str, int],
         model_path: str,
@@ -117,7 +117,7 @@ def prepare_training_data(
 
 
 def prepare_test_data(
-        test_data: Sequence[Sequence[tuple[str, str, str, int, str]]],
+        test_data: Sequence[Sequence[extraction.Token]],
         dataset_name: str,
         tag_system: Mapping[str, int],
         model_path: str,
@@ -167,13 +167,20 @@ def generate_config(
         tag_system: Mapping[str, int],
         model_path: str,
         num_deprel_tags: int,
+        num_sup_deprel_tags: int,
         train_deprel: bool = False,
         train_pos: bool = True,
+        train_xpos: bool = False,
         num_pos_tags: int = 50,
+        num_xpos_tags: int = 50,
         train_arc: bool = False,
         train_sup: bool = True,
         factorised: Literal[
             "structural", "complete", "seen", False] = False,
+        num_feats_tags: dict[str, int] = {},
+        train_feats: bool = False,
+        extra_num_labels: None | dict[str, int] = None,
+        train_subtypes: bool = False,
         ) -> transformers.PretrainedConfig:
 
     config = transformers.AutoConfig.from_pretrained(
@@ -204,6 +211,9 @@ def generate_config(
 
         "pos_emb_dim": 256,
         "num_pos_tags": num_pos_tags,
+        "num_xpos_tags": num_xpos_tags,
+        "extra_num_labels": extra_num_labels,
+        "train_subtypes": train_subtypes,
         "dropout": 0.2,
         "use_pos": False,
 
@@ -219,11 +229,12 @@ def generate_config(
         "parse_layer": num_encoder_layers,
 
         "train_pos": train_pos,
+        "train_xpos": train_xpos,
 
         "mlp_arc_hidden": 500 if train_arc else None,
 
         "mlp_lab_hidden": (
-            200 if train_deprel else None
+            200 if train_deprel or train_subtypes else None
             # previously 100
         ),
         "mlp_dropout": 0.3,
@@ -233,10 +244,14 @@ def generate_config(
             else None
         ),
         "deprel_num": num_deprel_tags,
+        "sup_deprel_num": num_sup_deprel_tags,
         "train_sup": train_sup,
         "factorised": factorised,
         "max_l": max_l,
         "max_r": max_r,
+
+        "num_feats_tags": num_feats_tags,
+        "train_feats": train_feats,
     }
 
     return config
@@ -244,17 +259,31 @@ def generate_config(
 
 def initialize_model(
         model_type: str, tag_system: Mapping[str, int], model_path: str,
-        num_deprel_tags: int, train_deprel: bool = False,
-        train_pos: bool = True, num_pos_tags: int = 50,
+        num_deprel_tags: int, num_sup_deprel_tags: int,
+        train_deprel: bool = False,
+        train_pos: bool = True, train_xpos: bool = False,
+        train_feats: bool = False,
+        num_pos_tags: int = 50,
+        num_xpos_tags: int = 50,
+        num_feats_tags: dict[str, int] = {},
         train_arc: bool = False,
         train_sup: bool = True,
         factorised: Literal['structural', 'complete', 'seen', False] = False,
+        extra_num_labels: dict[str, int] | None = None,
+        train_subtypes: bool = False,
         ) -> model.ModelForTagging | None:
     config = generate_config(
         model_type, tag_system, model_path, train_pos=train_pos,
-        num_pos_tags=num_pos_tags, num_deprel_tags=num_deprel_tags,
+        train_xpos=train_xpos,
+        num_pos_tags=num_pos_tags, num_xpos_tags=num_xpos_tags,
+        num_deprel_tags=num_deprel_tags,
+        num_sup_deprel_tags=num_sup_deprel_tags,
         train_arc=train_arc, train_sup=train_sup,
         factorised=factorised, train_deprel=train_deprel,
+        num_feats_tags=num_feats_tags,
+        train_feats=train_feats,
+        extra_num_labels=extra_num_labels,
+        train_subtypes=train_subtypes,
     )
     tagging_model = model.ModelForTagging(config=config)
     # torch.compiler.reset()
@@ -403,10 +432,15 @@ def register_run_metrics(
         epochs, tag_accuracy: float | None = None,
         pos_accuracy: None | float = None, arc_accuracy: None | float = None,
         deprel_accuracy: None | float = None,
-        factorised_accuracies: dict[str, float] = dict()):
+        factorised_accuracies: dict[str, float] = dict(),
+        xpos_accuracy: None | float = None,
+        feats_accuracies: dict[str, float] = dict(),
+        subtypes_accuracies: dict[str, float] = dict()):
     add_dict = {}
     if pos_accuracy is not None:
         add_dict['pos_accuracy'] = pos_accuracy
+    if xpos_accuracy is not None:
+        add_dict['xpos_accuracy'] = xpos_accuracy
     if tag_accuracy is not None:
         add_dict['tag_accuracy'] = tag_accuracy
     if arc_accuracy is not None:
@@ -415,6 +449,10 @@ def register_run_metrics(
         add_dict['deprel_accuracy'] = deprel_accuracy
     for f_name, acc in factorised_accuracies.items():
         add_dict[f_name] = acc
+    for f_name, acc in feats_accuracies.items():
+        add_dict[f_name] = acc
+    for s_name, acc in subtypes_accuracies.items():
+        add_dict[s_name] = acc
 
     writer.add_hparams(
         {
@@ -430,13 +468,19 @@ def get_accuracies(
         arc_predictions, eval_arc_labels,
         deprel_predictions, eval_deprel_labels,
         factorised_predictions, eval_factorised_labels,
+        xpos_predictions, eval_xpos_labels,
+        feats_predictions, eval_feats_labels,
+        subtypes_predictions, eval_subtypes_labels,
         f_supertag_logps, printinfo: bool = True,
         *, k: int = 1):
     dev_sup_acc = None
     dev_pos_acc = None
+    dev_xpos_acc = None
     dev_arc_acc = None
     dev_deprel_acc = None
     dev_factorised_accs = dict()
+    dev_feats_accs = dict()
+    dev_subtypes_accs = dict()
     if k == 1:
         func = evaluate.calc_tag_accuracy_k
     else:
@@ -446,6 +490,11 @@ def get_accuracies(
             pos_predictions, eval_pos_labels, writer,
             use_tensorboard, n_iter,
             typ="pos", k=k, printinfo=printinfo)
+    if xpos_predictions is not None:
+        dev_xpos_acc = func(
+            xpos_predictions, eval_xpos_labels, writer,
+            use_tensorboard, n_iter,
+            typ="xpos", k=k, printinfo=printinfo)
     if arc_predictions is not None:
         dev_arc_acc = func(
             arc_predictions, eval_arc_labels, writer,
@@ -471,6 +520,18 @@ def get_accuracies(
             writer, use_tensorboard, n_iter,
             typ=f_name, k=k, printinfo=printinfo
         )
+    for f_name, f_predictions in feats_predictions.items():
+        dev_feats_accs[f_name] = func(
+            f_predictions, eval_feats_labels[f_name],
+            writer, use_tensorboard, n_iter,
+            typ=f_name, k=k, printinfo=printinfo
+        )
+    for s_name, s_predictions in subtypes_predictions.items():
+        dev_subtypes_accs[s_name] = func(
+            s_predictions, eval_subtypes_labels[s_name],
+            writer, use_tensorboard, n_iter,
+            typ=s_name, k=k, printinfo=printinfo
+        )
 
     if f_supertag_logps is not None:
         dev_sup_acc = func(
@@ -480,7 +541,8 @@ def get_accuracies(
 
     return (
         dev_sup_acc, dev_pos_acc, dev_arc_acc,
-        dev_deprel_acc, dev_factorised_accs)
+        dev_deprel_acc, dev_factorised_accs,
+        dev_xpos_acc, dev_feats_accs, dev_subtypes_accs)
 
 
 @dataclasses.dataclass
@@ -779,6 +841,47 @@ def get_eval_metric(
     return eval_metric
 
 
+def gather_deprels_for_gold_arcs(
+        deprel_predictions: None | np.ndarray,
+        eval_deprel_labels: None | np.ndarray,
+        eval_arc_labels: None | np.ndarray,
+        ) -> np.ndarray | None:
+    if (
+        deprel_predictions is not None
+        and eval_deprel_labels is not None
+        ):
+        assert eval_arc_labels is not None
+
+        # eval_arc_labels: [B, D]
+        # Values:
+        #   -1 for ROOT/padding
+        #    0 for ROOT as head
+        #   >0 for word heads
+        #
+        # Replace -1 with 0 solely to obtain a legal gather index.
+        safe_heads = np.maximum(eval_arc_labels, 0)
+        # [B, D]
+
+        # deprel_predictions: [B, D, H, L]
+        head_indices = safe_heads[..., np.newaxis, np.newaxis]
+        # [B, D, 1, 1]
+
+        deprel_predictions_ = np.take_along_axis(
+            deprel_predictions,
+            head_indices,
+            axis=2,
+        )
+        # [B, D, 1, L]
+
+        deprel_predictions_ = np.squeeze(
+            deprel_predictions_,
+            axis=2,
+        )
+        # [B, D, L]
+        return deprel_predictions_
+    return deprel_predictions
+
+
 def train_command(args: settings.Settings):
     data_path = pathlib.Path(args.file.data_folder)
     prefix: str = args.file.conllu_file
@@ -848,12 +951,22 @@ def train_command(args: settings.Settings):
     model = initialize_model(
         args.tagging.model_name, sup2id, args.tagging.model_path,
         train_pos=args.tagging.train_pos,
+        train_xpos=args.tagging.train_xpos,
+        train_feats=args.tagging.train_feats,
         num_pos_tags=len(train_dataset.pos_dict),
+        num_xpos_tags=len(train_dataset.xpos_dict),
         num_deprel_tags=len(train_dataset.deprel_dict),
+        num_sup_deprel_tags=len(train_dataset.sup_deprel_dict),
+        num_feats_tags={
+            feat: len(dic) for feat, dic in train_dataset.feats_dicts.items()},
         train_deprel=args.tagging.train_deprel,
         train_arc=args.tagging.train_arc,
         train_sup=args.tagging.train_sup,
         factorised=args.tagging.factorised,
+        extra_num_labels={
+            subtype: len(dic) for subtype, dic
+            in train_dataset.subtypes_dicts.items()},
+        train_subtypes=args.tagging.train_subtypes,
     )
     assert model is not None
     model.to(device)
@@ -1014,6 +1127,9 @@ def train_command(args: settings.Settings):
                     arc_loss = outputs[4]
                     deprel_loss = outputs[6]
                     factorised_losses = outputs[8]
+                    xpos_loss = outputs[10]
+                    feats_losses = outputs[12]
+                    subtypes_losses = outputs[14]
 
                     loss: torch.Tensor = torch.zeros(
                         (1,), device="cpu" if device == torch.device("cpu")
@@ -1030,11 +1146,24 @@ def train_command(args: settings.Settings):
                         #     1-args.tagging.loss_ratio)*pos_loss
                         loss += pos_loss
                         num_losses += 1
+                    if xpos_loss is not None:
+                        # loss = args.tagging.loss_ratio*loss + (
+                        #     1-args.tagging.loss_ratio)*pos_loss
+                        loss += xpos_loss
+                        num_losses += 1
                     if deprel_loss is not None:
                         loss += deprel_loss
                         num_losses += 1
                     if factorised_losses is not None:
                         for f_loss in factorised_losses.values():
+                            loss += f_loss
+                            num_losses += 1
+                    if feats_losses is not None:
+                        for f_loss in feats_losses.values():
+                            loss += f_loss
+                            num_losses += 1
+                    if subtypes_losses is not None:
+                        for f_loss in subtypes_losses.values():
                             loss += f_loss
                             num_losses += 1
                     loss /= num_losses
@@ -1055,11 +1184,22 @@ def train_command(args: settings.Settings):
                         if pos_loss is not None:
                             writer.add_scalar(
                                 'PosLoss/train', pos_loss, n_iter)
+                        if xpos_loss is not None:
+                            writer.add_scalar(
+                                'XposLoss/train', xpos_loss, n_iter)
                         if deprel_loss is not None:
                             writer.add_scalar(
                                 'DeprelLoss/train', deprel_loss, n_iter)
                         if factorised_losses is not None:
                             for f_name, f_loss in factorised_losses.items():
+                                writer.add_scalar(
+                                    f'{f_name}Loss/train', f_loss, n_iter)
+                        if feats_losses is not None:
+                            for f_name, f_loss in feats_losses.items():
+                                writer.add_scalar(
+                                    f'{f_name}Loss/train', f_loss, n_iter)
+                        if subtypes_losses is not None:
+                            for f_name, f_loss in subtypes_losses.items():
                                 writer.add_scalar(
                                     f'{f_name}Loss/train', f_loss, n_iter)
                     progbar.set_postfix(loss=loss.item())
@@ -1083,10 +1223,16 @@ def train_command(args: settings.Settings):
                 arc_predictions, eval_arc_labels,
                 deprel_predictions, eval_deprel_labels,
                 factorised_predictions, eval_factorised_labels,
+                xpos_predictions, eval_xpos_labels,
+                feats_predictions, eval_feats_labels,
+                subtypes_predictions, eval_subtypes_labels,
                 dev_loss,
                 dev_sup_loss, dev_pos_loss,
                 dev_arc_loss, dev_deprel_loss,
-                dev_factorised_losses) = (
+                dev_factorised_losses,
+                dev_xpos_loss,
+                dev_feats_losses,
+                dev_subtypes_losses,) = (
                 evaluate.predict(
                     model, dev_dataloader, len(dev_dataset),
                     len(sup2id), args.tagging.batch_size, device,
@@ -1101,10 +1247,18 @@ def train_command(args: settings.Settings):
                 num_losses += 1
             if dev_pos_loss is not None:
                 num_losses += 1
+            if dev_xpos_loss is not None:
+                num_losses += 1
             if dev_deprel_loss is not None:
                 num_losses += 1
             if dev_factorised_losses is not None:
                 for f_loss in dev_factorised_losses.values():
+                    num_losses += 1
+            if dev_feats_losses is not None:
+                for f_loss in dev_feats_losses.values():
+                    num_losses += 1
+            if dev_subtypes_losses is not None:
+                for f_loss in dev_subtypes_losses.values():
                     num_losses += 1
             dev_loss /= num_losses
 
@@ -1121,6 +1275,9 @@ def train_command(args: settings.Settings):
                 if dev_pos_loss is not None:
                     writer.add_scalar(
                         'PosLoss/dev', dev_pos_loss, n_iter)
+                if dev_xpos_loss is not None:
+                    writer.add_scalar(
+                        'XposLoss/dev', dev_xpos_loss, n_iter)
                 if dev_deprel_loss is not None:
                     writer.add_scalar(
                         'DeprelLoss/dev', dev_deprel_loss, n_iter)
@@ -1128,40 +1285,24 @@ def train_command(args: settings.Settings):
                     writer.add_scalar(
                         f'{f_name}Loss/dev', f_dev_loss, n_iter
                     )
+                for f_name, f_dev_loss in dev_feats_losses.items():
+                    writer.add_scalar(
+                        f'{f_name}Loss/dev', f_dev_loss, n_iter
+                    )
+                for f_name, f_dev_loss in dev_subtypes_losses.items():
+                    writer.add_scalar(
+                        f'{f_name}Loss/dev', f_dev_loss, n_iter
+                    )
 
-            deprel_predictions_ = deprel_predictions
-            if (
-                    deprel_predictions is not None
-                    and eval_deprel_labels is not None
-                    ):
-                assert eval_arc_labels is not None
-
-                # eval_arc_labels: [B, D]
-                # Values:
-                #   -1 for ROOT/padding
-                #    0 for ROOT as head
-                #   >0 for word heads
-                #
-                # Replace -1 with 0 solely to obtain a legal gather index.
-                safe_heads = np.maximum(eval_arc_labels, 0)
-                # [B, D]
-
-                # deprel_predictions: [B, D, H, L]
-                head_indices = safe_heads[..., np.newaxis, np.newaxis]
-                # [B, D, 1, 1]
-
-                deprel_predictions_ = np.take_along_axis(
-                    deprel_predictions,
-                    head_indices,
-                    axis=2,
+            deprel_predictions_ = gather_deprels_for_gold_arcs(
+                deprel_predictions, eval_deprel_labels,
+                eval_arc_labels
+            )
+            subtypes_predictions_ = {
+                s_name: gather_deprels_for_gold_arcs(
+                    s_preds, eval_subtypes_labels[s_name], eval_arc_labels
                 )
-                # [B, D, 1, L]
-
-                deprel_predictions_ = np.squeeze(
-                    deprel_predictions_,
-                    axis=2,
-                )
-                # [B, D, L]
+                for s_name, s_preds in subtypes_predictions.items()}
 
             seen_supertag_logps = None
             if args.tagging.factorised in ("seen", "complete"):
@@ -1182,7 +1323,9 @@ def train_command(args: settings.Settings):
                 )
             (
                 dev_sup_acc, dev_pos_acc, dev_arc_acc,
-                dev_deprel_acc, dev_factorised_accs) = (
+                dev_deprel_acc, dev_factorised_accs,
+                dev_xpos_acc, dev_feats_accs,
+                dev_subtypes_accs,) = (
                 get_accuracies(
                     writer, n_iter, args.tagging.use_tensorboard,
                     predictions, eval_labels,
@@ -1190,6 +1333,9 @@ def train_command(args: settings.Settings):
                     arc_predictions, eval_arc_labels,
                     deprel_predictions_, eval_deprel_labels,
                     factorised_predictions, eval_factorised_labels,
+                    xpos_predictions, eval_xpos_labels,
+                    feats_predictions, eval_feats_labels,
+                    subtypes_predictions_, eval_subtypes_labels,
                     f_supertag_logps=seen_supertag_logps, printinfo=False,
                     )
             )
@@ -1204,6 +1350,10 @@ def train_command(args: settings.Settings):
                     writer.add_scalar(
                         'pos_acc/dev',
                         dev_pos_acc, n_iter)
+                if dev_xpos_acc is not None:
+                    writer.add_scalar(
+                        'xpos_acc/dev',
+                        dev_xpos_acc, n_iter)
                 if dev_arc_acc is not None:
                     writer.add_scalar(
                         'arc_acc/dev',
@@ -1219,6 +1369,16 @@ def train_command(args: settings.Settings):
                         f'{f_name}_acc/dev',
                         f_dev_acc, n_iter,
                     )
+                for f_name, f_dev_acc in dev_feats_accs.items():
+                    writer.add_scalar(
+                        f'{f_name}_acc/dev',
+                        f_dev_acc, n_iter,
+                    )
+                for s_name, s_dev_acc in dev_subtypes_accs.items():
+                    writer.add_scalar(
+                        f'{s_name}_acc/dev',
+                        s_dev_acc, n_iter,
+                    )
                 # add reporting of rebuilt factorised supertags
 
             combined_acc = 0
@@ -1226,11 +1386,15 @@ def train_command(args: settings.Settings):
                 combined_acc += dev_sup_acc
             if dev_pos_acc is not None:
                 combined_acc += dev_pos_acc
+            if dev_xpos_acc is not None:
+                combined_acc += dev_xpos_acc
             if dev_arc_acc is not None:
                 combined_acc += dev_arc_acc
             if dev_deprel_acc is not None:
                 combined_acc += dev_deprel_acc
             for f_dev_acc in dev_factorised_accs.values():
+                combined_acc += f_dev_acc
+            for f_dev_acc in dev_feats_accs.values():
                 combined_acc += f_dev_acc
             combined_acc /= num_losses
 
@@ -1271,6 +1435,8 @@ def train_command(args: settings.Settings):
 
             if dev_pos_acc is not None:
                 logging.info("current pos acc {}".format(dev_pos_acc))
+            if dev_xpos_acc is not None:
+                logging.info("current xpos acc {}".format(dev_xpos_acc))
             if dev_arc_acc is not None:
                 logging.info("current arc acc {}".format(dev_arc_acc))
             if dev_deprel_acc is not None:
@@ -1279,6 +1445,10 @@ def train_command(args: settings.Settings):
                 logging.info("current supertag acc {}".format(dev_sup_acc))
             for f_name, f_dev_acc in dev_factorised_accs.items():
                 logging.info("current {} acc {}".format(f_name, f_dev_acc))
+            for f_name, f_dev_acc in dev_feats_accs.items():
+                logging.info("current {} acc {}".format(f_name, f_dev_acc))
+            for s_name, s_dev_acc in dev_subtypes_accs.items():
+                logging.info("current {} acc {}".format(s_name, s_dev_acc))
             if eval_metric is not None:
                 logging.info("eval metric {}".format(eval_metric))
             logging.info("last metric {}".format(last_metric))
@@ -1295,22 +1465,28 @@ def train_command(args: settings.Settings):
                 scheduler, pathlib.Path(
                     args.tagging.output_path), run_name)
 
-            print("pos mix:", torch.softmax(
-                model.pos_mix.weights, dim=0).tolist())
-            print("arc mix:", torch.softmax(
-                model.arc_mix.weights, dim=0).tolist())
-            if model.rel_mix is not None:
-                print("rel mix:", torch.softmax(
-                    model.rel_mix.weights, dim=0).tolist())
-            if model.sup_mix is not None:
-                print("sup mix:", torch.softmax(
-                    model.sup_mix.weights, dim=0).tolist())
-            if model.sup_arg_mix is not None:
-                print("sup arg mix:", torch.softmax(
-                    model.sup_arg_mix.weights, dim=0).tolist())
-            if model.sup_head_mix is not None:
-                print("sup head mix:", torch.softmax(
-                    model.sup_head_mix.weights, dim=0).tolist())
+            # print("pos mix:", torch.softmax(
+            #     model.pos_mix.weights, dim=0).tolist())
+            # print("xpos mix:", torch.softmax(
+            #     model.xpos_mix.weights, dim=0).tolist())
+            # print("arc mix:", torch.softmax(
+            #     model.arc_mix.weights, dim=0).tolist())
+            # if model.rel_mix is not None:
+            #     print("rel mix:", torch.softmax(
+            #         model.rel_mix.weights, dim=0).tolist())
+            # if model.sup_mix is not None:
+            #     print("sup mix:", torch.softmax(
+            #         model.sup_mix.weights, dim=0).tolist())
+            # if model.sup_arg_mix is not None:
+            #     print("sup arg mix:", torch.softmax(
+            #         model.sup_arg_mix.weights, dim=0).tolist())
+            # if model.sup_head_mix is not None:
+            #     print("sup head mix:", torch.softmax(
+            #         model.sup_head_mix.weights, dim=0).tolist())
+            # if model.feats_mixes is not None:
+            #     for feat, mix in model.feats_mixes.items():
+            #         print(f"{feat} mix:", torch.softmax(
+            #             mix.weights, dim=0).tolist())
 
             # if dev_metrics.fscore > last_fscore or dev_loss < last...
             last_metric = eval_metric
@@ -1413,6 +1589,9 @@ def _finish_training(
         arc_predictions, eval_arc_labels,
         deprel_predictions, eval_deprel_labels,
         factorised_predictions, eval_factorised_labels,
+        xpos_predictions, eval_xpos_labels,
+        feats_predictions, eval_feats_labels,
+        subtypes_predictions, eval_subtypes_labels,
         *_) = (
         evaluate.predict(
             model, eval_dataloader, len(eval_dataset),
@@ -1437,7 +1616,11 @@ def _finish_training(
                 factorised_predictions["aux_rel_ids"] / t_sup),
         )
 
-    sup_acc, pos_acc, arc_acc, deprel_acc, dev_factorised_accs = (
+    (
+        sup_acc, pos_acc, arc_acc,
+        deprel_acc, dev_factorised_accs,
+        dev_xpos_accs, dev_feats_accs,
+        dev_subtypes_accs,) = (
         get_accuracies(
             writer, n_iter, args.use_tensorboard,
             predictions, eval_labels,
@@ -1445,6 +1628,9 @@ def _finish_training(
             arc_predictions, eval_arc_labels,
             deprel_predictions, eval_deprel_labels,
             factorised_predictions, eval_factorised_labels,
+            xpos_predictions, eval_xpos_labels,
+            feats_predictions, eval_feats_labels,
+            subtypes_predictions, eval_subtypes_labels,
             seen_supertag_logps,
             printinfo=False
             )
@@ -1453,7 +1639,8 @@ def _finish_training(
     register_run_metrics(
         writer, run_name,  # args.lr,
         args.epochs, sup_acc, pos_acc, arc_acc, deprel_acc,
-        dev_factorised_accs)
+        dev_factorised_accs, dev_xpos_accs, dev_feats_accs,
+        dev_subtypes_accs,)
 
 
 def evaluate_command(args: settings.Settings, k: int = 1):
@@ -1513,13 +1700,26 @@ def evaluate_command(args: settings.Settings, k: int = 1):
     id2pos = {i: pos for pos, i in eval_dataset.pos_dict.items()}
 
     model = initialize_model(
-        args.tagging.model_name, sup2id, args.tagging.model_path,
+        args.tagging.model_name, sup2id,
+        args.tagging.model_path,
         num_pos_tags=len(eval_dataset.pos_dict),
+        num_xpos_tags=len(eval_dataset.xpos_dict),
         num_deprel_tags=len(eval_dataset.deprel_dict),
+        num_sup_deprel_tags=len(eval_dataset.sup_deprel_dict),
+        num_feats_tags={
+            feat: len(dic) for feat, dic in eval_dataset.feats_dicts.items()},
         train_deprel=args.tagging.train_deprel,
         train_arc=args.tagging.train_arc,
         train_sup=args.tagging.train_sup,
-        factorised=args.tagging.factorised)
+        train_pos=args.tagging.train_pos,
+        train_xpos=args.tagging.train_xpos,
+        train_feats=args.tagging.train_feats,
+        factorised=args.tagging.factorised,
+        extra_num_labels={
+            subtype: len(dic)
+            for subtype, dic
+            in eval_dataset.subtypes_dicts.items()},
+        train_subtypes=args.tagging.train_subtypes,)
 
     assert model is not None
 
@@ -1572,6 +1772,9 @@ def evaluate_command(args: settings.Settings, k: int = 1):
         arc_predictions, eval_arc_labels,
         deprel_predictions, eval_deprel_labels,
         factorised_predictions, eval_factorised_labels,
+        xpos_predictions, eval_xpos_labels,
+        feats_predictions, eval_feats_labels,
+        subtypes_predictions, eval_subtypes_labels,
         *_) = (
         evaluate.predict(
             model, eval_dataloader, len(eval_dataset),
@@ -1592,6 +1795,16 @@ def evaluate_command(args: settings.Settings, k: int = 1):
             eval_arc_labels,
         )
         # [B, D, L]
+
+    subtypes_predictions_ = {
+        s_name: select_deprel_logits(
+            s_preds,
+            eval_arc_labels,
+        )
+        for s_name, s_preds
+        in subtypes_predictions.items()
+        if eval_arc_labels is not None
+    }
 
     t_sup: float = args.tagging.t_sup
     t_arc: float = args.tagging.t_arc
@@ -1615,7 +1828,9 @@ def evaluate_command(args: settings.Settings, k: int = 1):
         )
     (
         dev_sup_accs, dev_pos_accs, dev_arc_accs,
-        dev_deprel_accs, dev_factorised_accs) = (
+        dev_deprel_accs, dev_factorised_accs,
+        dev_xpos_accs, dev_feats_accs,
+        dev_subtypes_accs,) = (
         get_accuracies(
             writer, 0, args.tagging.use_tensorboard,
             predictions, eval_labels,
@@ -1623,6 +1838,9 @@ def evaluate_command(args: settings.Settings, k: int = 1):
             arc_predictions, eval_arc_labels,
             deprel_predictions_, eval_deprel_labels,
             factorised_predictions, eval_factorised_labels,
+            xpos_predictions, eval_xpos_labels,
+            feats_predictions, eval_feats_labels,
+            subtypes_predictions_, eval_subtypes_labels,
             seen_supertag_logps,
             k=k, printinfo=False
             )
@@ -1635,6 +1853,9 @@ def evaluate_command(args: settings.Settings, k: int = 1):
             if dev_pos_accs is not None:
                 print(
                     f"pos_acc k={k}:", dev_pos_accs[k-1])
+            if dev_xpos_accs is not None:
+                print(
+                    f"xpos_acc k={k}:", dev_xpos_accs[k-1])
             if dev_arc_accs is not None:
                 print(
                     f"arc_acc k={k}:", dev_arc_accs[k-1])
@@ -1645,6 +1866,14 @@ def evaluate_command(args: settings.Settings, k: int = 1):
                 print(
                     f"{f_name}_acc k={k}:", f_dev_accs[k-1]
                 )
+            for f_name, f_dev_accs in dev_feats_accs.items():
+                print(
+                    f"{f_name}_acc k={k}:", f_dev_accs[k-1]
+                )
+            for s_name, s_dev_accs in dev_subtypes_accs.items():
+                print(
+                    f"{s_name}_acc k={k}:", s_dev_accs[k-1]
+                )
 
     else:
         if dev_sup_accs is not None:
@@ -1653,6 +1882,9 @@ def evaluate_command(args: settings.Settings, k: int = 1):
         if dev_pos_accs is not None:
             print(
                 f"pos_acc k={k}:", dev_pos_accs)
+        if dev_xpos_accs is not None:
+            print(
+                f"xpos_acc k={k}:", dev_xpos_accs)
         if dev_arc_accs is not None:
             print(
                 f"arc_acc k={k}:", dev_arc_accs)
@@ -1662,6 +1894,12 @@ def evaluate_command(args: settings.Settings, k: int = 1):
         for f_name, f_dev_accs in dev_factorised_accs.items():
             print(
                 f"{f_name}_acc k={k}:", f_dev_accs)
+        for f_name, f_dev_accs in dev_feats_accs.items():
+            print(
+                f"{f_name}_acc k={k}:", f_dev_accs)
+        for s_name, s_dev_accs in dev_subtypes_accs.items():
+            print(
+                f"{s_name}_acc k={k}:", s_dev_accs)
 
     assert eval_labels is not None
     eval_metric: float = get_eval_metric(
@@ -1735,10 +1973,21 @@ def predict_command(args: settings.Settings):
     model = initialize_model(
         args.tagging.model_name, sup2id, args.tagging.model_path,
         num_pos_tags=len(pred_dataset.pos_dict),
+        num_xpos_tags=len(pred_dataset.xpos_dict),
         num_deprel_tags=len(
             pred_dataset.deprel_dict) if args.tagging.train_deprel else None,
+        num_sup_deprel_tags=len(pred_dataset.sup_deprel_dict),
+        num_feats_tags={
+            feat: len(dic) for feat, dic in pred_dataset.feats_dicts.items()},
         train_arc=args.tagging.train_arc, train_sup=args.tagging.train_sup,
-        factorised=args.tagging.factorised)
+        train_pos=args.tagging.train_pos, train_xpos=args.tagging.train_xpos,
+        train_feats=args.tagging.train_feats,
+        factorised=args.tagging.factorised,
+        extra_num_labels={
+            subtype: len(dic)
+            for subtype, dic
+            in pred_dataset.subtypes_dicts.items()},
+        train_subtypes=args.tagging.train_subtypes,)
     assert model is not None
 
     model.load_state_dict(
@@ -1753,6 +2002,9 @@ def predict_command(args: settings.Settings):
         arc_predictions, _,
         deprel_predictions, _,
         factorised_predictions, _,
+        xpos_predictions, _,
+        feats_predictions, _,
+        subtypes_predictions, _,
         *_) = (
         evaluate.predict(
             model, pred_dataloader, len(pred_dataset),

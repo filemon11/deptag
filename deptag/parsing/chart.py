@@ -13,6 +13,7 @@ import tqdm
 import multiprocessing
 
 from .. import extraction, utils
+from . import deprels
 
 from timeit import default_timer as timer
 from datetime import timedelta
@@ -2862,25 +2863,26 @@ def process(
         #         raise Exception
         backtracked = system.backtrack(result[0], result[1])
 
-    # predicted_pos = np.concatenate(
-    #     (predicted_pos[0, np.newaxis], predicted_pos[~word_ignore]))
-
     head_result = np.array(backtracked[0], dtype=int)-1
     head_result += head_result < 0
     head_result[0] = 0
     deprel_str_result: list[str] = backtracked[3]
-    # predicted_head_pos = predicted_pos[head_result[1:]]
-    # deprel_result = np.array([
-    #     deprel2id[deprels.reconstruct(
-    #         deprel, id2pos[dep_pos.item()], id2pos[head_pos.item()])]
-    #     for deprel, dep_pos, head_pos in zip(
-    #         deprel_str_result[1:], predicted_pos[1:],
-    #         predicted_head_pos)
-    # ])
 
-    deprel_result = np.array([
-        deprel2id[deprel] for deprel in deprel_str_result[1:]
-    ])
+    if predicted_pos is not None:
+        predicted_pos = np.concatenate(
+                (predicted_pos[0, np.newaxis], predicted_pos[~word_ignore]))
+        predicted_head_pos = predicted_pos[head_result[1:]]
+        deprel_result = np.array([
+            deprel2id[deprels.reconstruct(
+                deprel, id2pos[dep_pos.item()], id2pos[head_pos.item()])]
+            for deprel, dep_pos, head_pos in zip(
+                deprel_str_result[1:], predicted_pos[1:],
+                predicted_head_pos)
+        ])
+    else:
+        deprel_result = np.array([
+            deprel2id[deprel] for deprel in deprel_str_result[1:]
+        ])
 
     # shape: [unpadded_len]
     # The indices refer to the head positions without ignored tokens.

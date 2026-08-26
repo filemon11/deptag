@@ -7,4 +7,4 @@ from .extractor import (
     RelativeTag, Aux, ProjectiveTag, get_lr_argnum,
     convert_relative_tag_to_factorised)
 from .treeplot import unicorn_plot_pipeline, relation_plot_pipeline
-from .preparation import prepare, prepare_train
+from .preparation import prepare, prepare_train, Token

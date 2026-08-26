@@ -7,7 +7,9 @@ from torch.nn.utils.rnn import pad_sequence
 import transformers
 from ..import extraction, data
 
-from typing import Mapping, Sequence, Iterable
+from typing import (
+    Mapping, Sequence, Iterable, Literal, Callable, TypeVar, Hashable,
+    Type, Self)
 
 
 PTB_TOKEN_MAPPING = {
@@ -34,6 +36,52 @@ PTB_TOKEN_MAPPING = {
 }
 
 
+K = TypeVar("K", bound=Hashable)
+
+
+class Lexicon(dict[K, int]):
+    unk: K
+
+    def __init__(self, mapping=None, /, **kwargs):
+        super().__init__(mapping, **kwargs)
+
+    @classmethod
+    def init(cls: Type[Self], mapping: Mapping[K, int], unknown: K) -> Self:
+        lexicon = cls(mapping)
+        lexicon[unknown] = len(lexicon)
+        lexicon.unk = unknown
+        return lexicon
+
+    @classmethod
+    def load(cls: Type[Self], mapping: Mapping[K, int], unknown: K) -> Self:
+        lexicon = cls(mapping)
+        lexicon.unk = unknown
+        return lexicon
+
+    def __getitem__(self, key: K) -> int:
+        if not hasattr(self, "unk"):
+            raise Exception("Use .init for initialisation.")
+
+        if key not in self.keys():
+            return self[self.unk]
+        return super().__getitem__(key)
+
+
+class UnkLexicon(Lexicon[str]):
+    unk = "UNK"
+
+    @classmethod
+    def unk_init(cls: Type[Self], mapping: Mapping[str, int]) -> Self:
+        lexicon = cls(mapping)
+        lexicon[cls.unk] = len(lexicon)
+        return lexicon
+
+    @classmethod
+    def unk_load(cls: Type[Self], mapping: Mapping[str, int]) -> Self:
+        lexicon = cls(mapping)
+        return lexicon
+
+
 def ptb_unescape(sent: Iterable[str]) -> list[str]:
     cleaned_words: list[str] = []
     for word in sent:
@@ -52,7 +100,8 @@ def ptb_unescape(sent: Iterable[str]) -> list[str]:
 class TaggingDataset(torch.utils.data.Dataset):
     def __init__(
             self, split, tokenizer, tag_system: Mapping[str, int],
-            data: Sequence[Sequence[tuple[str, str, str, int, str]]], device,
+            data: Sequence[Sequence[extraction.Token]],
+            device,
             dataset: str,
             max_train_len=350,
             factorised_max_left_right: None | tuple[int, int] = None):
@@ -89,27 +138,126 @@ class TaggingDataset(torch.utils.data.Dataset):
                 if len(sent) <= max_train_len]
             print(f"Loaded {len(self.trees)} sentences from {split}")
 
-        if not os.path.exists(
-                f"./data/pos/pos.{dataset.lower()}.json"
-                ) and "train" in split:
-            self.pos_dict = self.get_pos_dict()
-            with open(f"./data/pos/pos.{dataset.lower()}.json", 'w') as fp:
-                json.dump(self.pos_dict, fp)
-        else:
-            with open(f"./data/pos/pos.{dataset.lower()}.json", 'r') as fp:
-                self.pos_dict = json.load(fp)
+        self.pos_dict = self._get_dict(
+            "pos", dataset, split, self._create_dict_func("upos"))
+        self.deprel_dict = self._get_dict(
+            "deprel", dataset, split, self._create_dict_func(
+                "deprel", self.deprel_to_main))
+        self.sup_deprel_dict = self._get_dict(
+            "sup_deprel", dataset, split, self._create_dict_func(
+                "sup_deprel", self.deprel_to_main))
+        self.xpos_dict = self._get_dict(
+            "xpos", dataset, split, self._create_dict_func("xpos"))
 
-        if not os.path.exists(
-                f"./data/deprel/deprel.{dataset.lower()}.json"
-                ) and "train" in split:
-            self.deprel_dict = self.get_deprel_dict()
+        self.subtypes_dicts: dict[str, UnkLexicon] = {}
+        for deprel in self.deprel_dict.keys():
+            d_dict = self._get_dict(
+                f"deprel_{deprel}", dataset, split,
+                self._create_dict_func(
+                    "deprel",
+                    lambda x: (
+                        self.deprel_to_sub(x)
+                        if self.deprel_to_main(x) == deprel
+                        else None)))
+            if len(d_dict) > 2:
+                self.subtypes_dicts[f"deprel_{deprel}"] = d_dict
+
+        # feats dicts
+        # Conditions only on the tokens that receive the feature
+        # i.e. cannot be used to generate the features for a corpus;
+        # only an auxiliary task
+        self.feats_dicts: dict[str, UnkLexicon] = {}
+        filename: str = f"./data/dicts/feats.{dataset.lower()}.json"
+        if not os.path.exists(filename) and "train" in split:
+            feats = set([
+                key for sentence in self.trees
+                for token in sentence
+                for key in token.feats.keys()])
+
+            for feature in feats:
+                feat_dict: dict[str, int] = {}
+                for sent in self.trees:
+                    for token in sent:
+                        if feature in token.feats:
+                            feature_class = token.feats[feature]
+                            feat_dict[feature_class] = feat_dict.get(
+                                feature_class, len(feat_dict))
+                        # else:
+                        #     feat_dict["NOFEAT"] = feat_dict.get(
+                        #         "NOFEAT", len(feat_dict))
+
+                # Do not include feature if it has only one class
+                # (ignoring UNK)
+                if len(feat_dict) > 2:
+                    self.feats_dicts[feature] = UnkLexicon.unk_init(feat_dict)
             with open(
-                    f"./data/deprel/deprel.{dataset.lower()}.json", 'w') as fp:
-                json.dump(self.deprel_dict, fp)
+                    filename, 'w') as fp:
+                json.dump(self.feats_dicts, fp)
         else:
             with open(
-                    f"./data/deprel/deprel.{dataset.lower()}.json", 'r') as fp:
-                self.deprel_dict = json.load(fp)
+                    filename, 'r') as fp:
+                feats_dicts = json.load(fp)
+                for name, mapping in feats_dicts.items():
+                    self.feats_dicts[name] = UnkLexicon.unk_load(
+                        mapping
+                    )
+
+    @staticmethod
+    def _get_dict(
+            name: str, dataset: str,
+            split: Literal["train", "dev", "test"],
+            dict_getter: Callable[[], UnkLexicon]) -> UnkLexicon:
+
+        filename: str = f"./data/dicts/{name}.{dataset.lower()}.json"
+        if not os.path.exists(
+                filename
+                ) and "train" in split:
+            out_dict = dict_getter()
+            with open(
+                    filename, 'w') as fp:
+                json.dump(out_dict, fp)
+        else:
+            with open(
+                    filename, 'r') as fp:
+                out_dict = json.load(fp)
+                out_dict = UnkLexicon.unk_load(out_dict)
+                # This should be made adaptable for other UNK tokens
+        return out_dict
+
+    def _create_dict_func(
+            self,
+            token_attr: str,
+            transformation: None | Callable[[str | None], str | None] = None
+            ) -> Callable[[], UnkLexicon]:
+
+        def getter() -> UnkLexicon:
+            out_dict: dict[str, int] = {}
+            for sent in self.trees:
+                for token in sent:
+                    x = getattr(token, token_attr)
+                    if transformation is not None:
+                        x = transformation(x)
+                    if x is not None:
+                        out_dict[x] = out_dict.get(
+                            x, len(out_dict))
+            return UnkLexicon.unk_init(out_dict)
+        return getter
+
+    @staticmethod
+    def deprel_to_main(deprel: str | None) -> str | None:
+        if deprel is None:
+            return None
+        if data.has_subtype(deprel):
+            return data.split_main_sub(deprel)[0]
+        return deprel
+
+    @staticmethod
+    def deprel_to_sub(deprel: str | None) -> str | None:
+        if deprel is None:
+            return deprel
+        if data.has_subtype(deprel):
+            return data.split_main_sub(deprel)[1]
+        return "NOSUB"
 
     def _encode_words(
             self,
@@ -209,45 +357,26 @@ class TaggingDataset(torch.utils.data.Dataset):
 
         return input_ids, word_end_positions
 
-    def get_pos_dict(self):
-        pos_dict: dict[str, int] = {}
-        for sent in self.trees:
-            for _, x, _, _, _ in sent:
-                pos_dict[x] = pos_dict.get(x, len(pos_dict))
-        pos_dict["UNK"] = len(pos_dict)
-        return pos_dict
-
-    def get_deprel_dict(self):
-        # TOOD: add option for subtypes
-        deprel_dict: dict[str, int] = {}
-        for sent in self.trees:
-            for _, _, _, _, x in sent:
-                if data.has_subtype(x):
-                    x = data.split_main_sub(x)[0]
-                deprel_dict[x] = deprel_dict.get(x, len(deprel_dict))
-        deprel_dict["UNK"] = len(deprel_dict)
-        return deprel_dict
-
     def __len__(self):
         return int(len(self.trees))  # /24)  # TODO
 
     def __getitem__(self, index: int):
         sent = self.trees[index]
-        words = ptb_unescape(w[0] for w in sent)
+        words = ptb_unescape(w.word for w in sent)
 
         words = [w.replace("\xad", "") for w in words]
         # necessary to remove soft-hyphens from Romanian RRT dataset
 
         heads: torch.Tensor = torch.tensor(
-            [word[3] for word in sent], dtype=torch.long)  # - 1
+            [word.head for word in sent], dtype=torch.long)  # - 1
         # use BOS token as root
 
-        pos_tags = [self.pos_dict.get(
-            w[1], self.pos_dict["UNK"]) for w in sent]
-        deprel_tags = [self.deprel_dict.get(
-            data.split_main_sub(w[4])[0] if data.has_subtype(w[4]) else w[4],
-            self.deprel_dict["UNK"]) for w in sent]
-
+        pos_tags = [self.pos_dict[w.upos] for w in sent]
+        xpos_tags = [self.xpos_dict[w.xpos] for w in sent]
+        deprel_tags = [self.deprel_dict[
+            data.split_main_sub(
+                w.deprel)[0] if data.has_subtype(w.deprel) else w.deprel]
+                for w in sent]
         # encoded = self.tokenizer._encode_plus(' '.join(words))
         # word_end_positions = [
         #     encoded.char_to_token(i)
@@ -263,7 +392,7 @@ class TaggingDataset(torch.utils.data.Dataset):
 
         tag_ids_: list[int] = [
             (
-                self.tag_system[w[2]] if w[2] in self.tag_system
+                self.tag_system[w.sup] if w.sup in self.tag_system
                 else self.tag_system["-UNK*"])
             for w in sent]
 
@@ -272,7 +401,7 @@ class TaggingDataset(torch.utils.data.Dataset):
 
         factorised_tags = [
             extraction.convert_relative_tag_to_factorised(
-                extraction.convert_string_to_relative_relation(w[2]))
+                extraction.convert_string_to_relative_relation(w.sup))
             for w in sent]
 
         factorised_dict = dict()
@@ -283,8 +412,7 @@ class TaggingDataset(torch.utils.data.Dataset):
                     self.max_left - len(tag[1])) + tag[1]))
                 for tag in factorised_tags]
             l_arg_ids = [
-                [(self.deprel_dict.get(
-                    deprel, self.deprel_dict["UNK"])
+                [(self.sup_deprel_dict[deprel]
                     if deprel is not None else -1)
                     for deprel in word]
                 for word in l_args]
@@ -294,8 +422,7 @@ class TaggingDataset(torch.utils.data.Dataset):
                 tag[3] + [None] * (self.max_right - len(tag[3]))
                 for tag in factorised_tags]
             r_arg_ids = [
-                [(self.deprel_dict.get(
-                    deprel, self.deprel_dict["UNK"])
+                [(self.sup_deprel_dict[deprel]
                     if deprel is not None else -1)
                     for deprel in word]
                 for word in r_args]
@@ -306,8 +433,8 @@ class TaggingDataset(torch.utils.data.Dataset):
 
             aux_rel_ids = [
                 (
-                    self.deprel_dict.get(tag[5], self.deprel_dict["UNK"])
-                    if tag is not None else -1)
+                    self.sup_deprel_dict[tag[5]]
+                    if tag[5] is not None else -1)
                 for tag in factorised_tags]
 
             left_dict = {
@@ -334,6 +461,28 @@ class TaggingDataset(torch.utils.data.Dataset):
                     aux_rel_ids, dtype=torch.long
                 ),
             } | left_dict | right_dict
+
+        feats_dict = {
+            feat: torch.tensor(
+                [
+                    (
+                        f_dict[w.feats[feat]]
+                        if feat in w.feats else -1)  # f_dict["NOFEAT"])
+                    for w in sent],
+                dtype=torch.long)
+            for feat, f_dict in self.feats_dicts.items()}
+
+        subtypes_dict = {
+            deprel: torch.tensor(
+                [
+                    (
+                        self.subtypes_dicts[deprel][s]
+                        if (d := self.deprel_to_main(w.deprel)) is not None
+                        and (s := self.deprel_to_sub(w.deprel)) is not None
+                        and deprel.endswith(d) else -1)
+                    for w in sent],
+                dtype=torch.long)
+            for deprel in self.subtypes_dicts.keys()}
 
         # heads_long = torch.full_like(input_ids, -1)
 
@@ -382,12 +531,16 @@ class TaggingDataset(torch.utils.data.Dataset):
                 pos_tags,
                 dtype=torch.long,
             ),
+            "xpos_ids": torch.tensor(
+                xpos_tags,
+                dtype=torch.long,
+            ),
             "labels": tag_ids,
             "heads": heads,  # original UD heads: 0..num_words
             "deprel_ids": torch.tensor(
                 deprel_tags,
                 dtype=torch.long),
-        } | factorised_dict
+        } | factorised_dict | feats_dict | subtypes_dict
 
     def collate(self, batch):
         input_ids = pad_sequence(
@@ -400,84 +553,17 @@ class TaggingDataset(torch.utils.data.Dataset):
             self.pad_token_id
         )
 
+        keys = set(batch[0].keys()) - {"input_ids"}
+
         # -1 means that this padded slot contains no word.
-        word_end_positions = pad_sequence(
-            [item["word_end_positions"] for item in batch],
-            batch_first=True,
-            padding_value=-1,
-        )
-
-        pos_ids = pad_sequence(
-            [item["pos_ids"] for item in batch],
-            batch_first=True,
-            padding_value=-1,
-        )
-
-        labels = pad_sequence(
-            [item["labels"] for item in batch],
-            batch_first=True,
-            padding_value=-1,
-        )
-
-        heads = pad_sequence(
-            [item["heads"] for item in batch],
-            batch_first=True,
-            padding_value=-1,
-        )
-
-        deprel_ids = pad_sequence(
-            [item["deprel_ids"] for item in batch],
-            batch_first=True,
-            padding_value=-1,
-        )
-
         output_dict = {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-
-            "word_end_positions": word_end_positions,
-
-            "pos_ids": pos_ids,
-            "labels": labels,
-            "heads": heads,
-            "deprel_ids": deprel_ids,
-        }
-
-        if self.max_left is not None and self.max_right is not None:
-
-            output_dict |= {
-                "l_arg_nums": pad_sequence(
-                    [item["l_arg_nums"] for item in batch],
-                    batch_first=True,
-                    padding_value=-1,
-                ),
-                "r_arg_nums": pad_sequence(
-                    [item["r_arg_nums"] for item in batch],
-                    batch_first=True,
-                    padding_value=-1,
-                ),
-                "aux_positions": pad_sequence(
-                    [item["aux_positions"] for item in batch],
-                    batch_first=True,
-                    padding_value=-1,
-                ),
-                "aux_rel_ids": pad_sequence(
-                    [item["aux_rel_ids"] for item in batch],
-                    batch_first=True,
-                    padding_value=-1,
-                ),
-            } | {
-                f"left_{i}": pad_sequence(
-                    [item[f"left_{i}"] for item in batch],
-                    batch_first=True,
-                    padding_value=-1,
-                ) for i in range(1, self.max_left+1)
-            } | {
-                f"right_{i}": pad_sequence(
-                    [item[f"right_{i}"] for item in batch],
-                    batch_first=True,
-                    padding_value=-1,
-                ) for i in range(1, self.max_right+1)
-            }
+            key: pad_sequence(
+                [item[key] for item in batch],
+                batch_first=True,
+                padding_value=-1,
+            )
+            for key in keys
+        } | {
+            "input_ids": input_ids, "attention_mask": attention_mask}
 
         return output_dict

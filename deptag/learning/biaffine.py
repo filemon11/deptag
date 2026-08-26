@@ -68,10 +68,12 @@ class BiAffine(nn.Module):
 
 class BiAffineParser(nn.Module):
     """Biaffine Dependency Parser."""
-    def __init__(self,
-                 mlp_input: int, mlp_arc_hidden: int | None,
-                 mlp_lab_hidden: int | None, mlp_dropout: float,
-                 num_labels: int | None):
+    def __init__(
+            self,
+            mlp_input: int, mlp_arc_hidden: int | None,
+            mlp_lab_hidden: int | None, mlp_dropout: float,
+            num_labels: int | None,
+            extra_num_labels: dict[str, int] | None = None,):
         super(BiAffineParser, self).__init__()
 
         # Arc MLPs
@@ -96,15 +98,26 @@ class BiAffineParser(nn.Module):
         if mlp_arc_hidden is not None:
             self.arc_biaffine = BiAffine(mlp_arc_hidden, 1)
         self.lab_biaffine = None
-        if mlp_lab_hidden is not None:
-            assert num_labels is not None
+        if mlp_lab_hidden is not None and num_labels is not None:
             self.lab_biaffine = BiAffine(mlp_lab_hidden, num_labels)
+
+        self.extra_lab_biaffine = None
+        if extra_num_labels is not None:
+            assert mlp_lab_hidden is not None
+            self.extra_lab_biaffine = nn.ModuleDict({
+                feat: BiAffine(mlp_lab_hidden, num)
+                for feat, num
+                in extra_num_labels.items()
+            })
 
     # @torch.compile()
     def forward(
             self, h_arc: torch.Tensor | None, h_lab: torch.Tensor | None,
             *args, **kwargs
-            ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+            ) -> tuple[
+                torch.Tensor | None,
+                torch.Tensor | None,
+                dict[str, torch.Tensor] | None]:
         """Compute the score matrices for the arcs and labels."""
 
         arc_h = None
@@ -125,11 +138,19 @@ class BiAffineParser(nn.Module):
         if self.arc_biaffine is not None:
             S_arc = self.arc_biaffine(arc_h, arc_d).contiguous()
         S_lab = None
+        S_extra_lab = {}
         if lab_h is not None and lab_d is not None:
-            assert self.lab_biaffine is not None
-            S_lab = self.lab_biaffine(lab_h, lab_d).contiguous()
+            if self.lab_biaffine is not None:
+                S_lab = self.lab_biaffine(lab_h, lab_d).contiguous()
 
-        return S_arc, S_lab
+            if self.extra_lab_biaffine is not None:
+                S_extra_lab = {
+                    feat: biaffine(lab_h, lab_d).contiguous()
+                    for feat, biaffine
+                    in self.extra_lab_biaffine.items()
+                }
+
+        return S_arc, S_lab, S_extra_lab
 
     def arc_loss(
             self,
@@ -227,6 +248,9 @@ class BiAffineParser(nn.Module):
             printinfo: bool = False):
         """Compute the loss for the label predictions
         on the gold arcs (heads)."""
+        if not (labels != -1).any().item():
+            return torch.tensor(
+                0, dtype=S_lab.dtype, device=S_lab.device)
 
         safe_heads = heads.clamp_min(0).long()
 
@@ -249,6 +273,20 @@ class BiAffineParser(nn.Module):
             label_smoothing=label_smoothing
         )
 
+    def extra_lab_loss(
+            self, S_extra_lab, heads, labels,
+            mask: torch.Tensor | None = None,
+            label_smoothing: float = 0.0,
+            printinfo: bool = False):
+        return {
+            feat: self.lab_loss(
+                S_lab, heads, labels[feat], mask,
+                label_smoothing, printinfo
+            )
+            for feat, S_lab
+            in S_extra_lab.items()
+        }
+
     @property
     def num_parameters(self):
         """Returns the number of trainable parameters of the model."""
@@ -260,7 +298,8 @@ def make_model(
         mlp_arc_hidden: int,
         mlp_lab_hidden: int | None,
         mlp_dropout: float,
-        num_labels: int | None) -> BiAffineParser:
+        num_labels: int | None,
+        extra_num_labels: dict[str, int] | None) -> BiAffineParser:
     """Initiliaze a the BiAffine parser according to the specs in args."""
 
     # Initialize the model.
@@ -269,7 +308,8 @@ def make_model(
         mlp_arc_hidden,
         mlp_lab_hidden,
         mlp_dropout,
-        num_labels
+        num_labels,
+        extra_num_labels=extra_num_labels,
     )
 
     # Initialize parameters with Glorot.

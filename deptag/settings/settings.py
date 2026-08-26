@@ -55,9 +55,12 @@ class TaggingSettings:
     eval_model_name: str = ""
     loss_ratio: float = 0.5
     train_pos: bool = True
+    train_xpos: bool = False
     train_arc: bool = False
     train_deprel: bool = False
     train_sup: bool = True
+    train_feats: bool = False
+    train_subtypes: bool = False
     mode: Literal["init", "continue", "add"] = "init"
     eval_metric: Literal[
         "cacc", "mst-las", "mst-uas", "a*-las", "a*-uas"] = "cacc"

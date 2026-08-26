@@ -48,6 +48,11 @@ class ModelForTagging(nn.Module):
         self.use_pos: bool = config.task_specific_params['use_pos']
         self.train_sup: bool = config.task_specific_params['train_sup']
         self.num_pos_tags: int = config.task_specific_params['num_pos_tags']
+        self.num_xpos_tags: int = config.task_specific_params['num_xpos_tags']
+
+        self.num_feats_tags: dict[
+            str, int] = config.task_specific_params['num_feats_tags']
+        self.train_feats: bool = config.task_specific_params['train_feats']
 
         self.pos_emb_dim: int = config.task_specific_params['pos_emb_dim']
         self.dropout_rate: float = config.task_specific_params['dropout']
@@ -90,11 +95,23 @@ class ModelForTagging(nn.Module):
         # self.pos_layer = config.task_specific_params["pos_layer"]
         # self.supertag_layer = config.task_specific_params["supertag_layer"]
         # self.parse_layer = config.task_specific_params["parse_layer"]
-        self.pos_mix = LayerMix(config.num_hidden_layers)
+        self.pos_mix = None
+        if config.task_specific_params["train_pos"]:
+            self.pos_mix = LayerMix(config.num_hidden_layers)
+        self.xpos_mix = None
+        if config.task_specific_params["train_xpos"]:
+            self.xpos_mix = LayerMix(config.num_hidden_layers)
         self.arc_mix = LayerMix(config.num_hidden_layers)
         self.rel_mix = None
         if config.task_specific_params["mlp_lab_hidden"] is not None:
             self.rel_mix = LayerMix(config.num_hidden_layers)
+
+        self.feats_mixes = None
+        if self.train_feats:
+            self.feats_mixes = nn.ModuleDict({
+                feat: LayerMix(config.num_hidden_layers)
+                for feat in self.num_feats_tags.keys()
+            })
 
         self.sup_mix = None
         self.sup_arg_mix = None
@@ -153,17 +170,17 @@ class ModelForTagging(nn.Module):
                 if self.factorised in ("complete", "seen"):
                     self.left_labels_projections = nn.ModuleList([
                         get_sequential(
-                            config.task_specific_params["deprel_num"])
+                            config.task_specific_params["sup_deprel_num"])
                         for _ in range(self.max_l)
                     ])
 
                     self.right_labels_projections = nn.ModuleList([
                         get_sequential(
-                            config.task_specific_params["deprel_num"])
+                            config.task_specific_params["sup_deprel_num"])
                         for _ in range(self.max_r)
                     ])
                     self.aux_label_projection = get_sequential(
-                        config.task_specific_params["deprel_num"])
+                        config.task_specific_params["sup_deprel_num"])
 
                 self.aux_position_projection = get_sequential(
                     self.max_l + self.max_r + 3)
@@ -178,6 +195,19 @@ class ModelForTagging(nn.Module):
             #     nn.Linear(config.hidden_size, self.num_pos_tags)
             # )
             self.pos_projection = get_sequential(self.num_pos_tags)
+        self.xpos_projection = None
+        if config.task_specific_params["train_xpos"]:
+            # self.pos_projection = nn.Sequential(
+            #     nn.Linear(config.hidden_size, self.num_pos_tags)
+            # )
+            self.xpos_projection = get_sequential(self.num_xpos_tags)
+
+        self.feats_projections = None
+        if self.train_feats:
+            self.feats_projections = nn.ModuleDict({
+                feat: get_sequential(num)
+                for feat, num in self.num_feats_tags.items()
+            })
 
         self.biaffine = None
         self.root_arc = None
@@ -191,6 +221,9 @@ class ModelForTagging(nn.Module):
                 config.task_specific_params["mlp_lab_hidden"],
                 config.task_specific_params["mlp_dropout"],
                 config.task_specific_params["mlp_num_labels"],
+                config.task_specific_params[
+                    "extra_num_labels"] if config.task_specific_params[
+                        "train_subtypes"] else None
             )
             # self.biaffine.compile()  # (dynamic=True)
             self.root_arc = nn.Parameter(
@@ -206,6 +239,7 @@ class ModelForTagging(nn.Module):
             self,
             input_ids=None,
             pos_ids=None,
+            xpos_ids=None,
             word_end_positions=None,
             attention_mask=None,
             head_mask=None,
@@ -245,7 +279,12 @@ class ModelForTagging(nn.Module):
             token_repr_sup_head = self.sup_head_mix(outputs["hidden_states"])
         else:
             token_repr_sup = self.sup_mix(outputs["hidden_states"])
-        token_repr_pos = self.pos_mix(outputs["hidden_states"])
+        token_repr_pos = None
+        if self.pos_mix is not None:
+            token_repr_pos = self.pos_mix(outputs["hidden_states"])
+        token_repr_xpos = None
+        if self.xpos_mix is not None:
+            token_repr_xpos = self.xpos_mix(outputs["hidden_states"])
         # print(num_layers, round(num_layers*(2/3)), round(num_layers*(1/3)))
 
         word_repr_arc, word_mask = (
@@ -292,61 +331,22 @@ class ModelForTagging(nn.Module):
                 )
             )
 
-        word_repr_pos, _ = (
-            self._gather_word_representations(
-                token_repr_pos,
-                word_end_positions,
+        word_repr_pos = None
+        if token_repr_pos is not None:
+            word_repr_pos, _ = (
+                self._gather_word_representations(
+                    token_repr_pos,
+                    word_end_positions,
+                )
             )
-        )
-
-        # if self.use_pos:
-        #     pos_input = torch.where(
-        #         pos_ids >= 0,
-        #         pos_ids,
-        #         0,
-        #     )
-        #
-        #     pos_encodings = self.pos_encoder(pos_input)
-        #     # token_repr_parse = torch.cat(
-        #     #     [token_repr_parse, pos_encodings], dim=-1)
-        #     token_repr_arc = torch.cat(
-        #             [token_repr_arc, pos_encodings], dim=-1)
-        #     token_repr_rel = torch.cat(
-        #             [token_repr_rel, pos_encodings], dim=-1)
-        # else:
-        #     token_repr_parse = outputs[0]
-
-        # token_repr_parse = torch.cat(
-        #     [token_repr_parse, self.endofword_embedding(
-        #         (pos_ids != 0).long())],
-        #     dim=-1)
-        # eow = self.endofword_embedding((end_of_word > 0).long())
-
-        # token_repr_arc = torch.cat(
-        #     [token_repr_arc, eow],
-        #     dim=-1)
-        # token_repr_rel = torch.cat(
-        #     [token_repr_rel, eow],
-        #     dim=-1)
-        # token_repr_sup = torch.cat(
-        #     [token_repr_sup, eow],
-        #     dim=-1)
-        # token_repr_pos = torch.cat(
-        #     [token_repr_pos, eow],
-        #     dim=-1)
-
-        # token_repr_parse = self.input_projection_parse(token_repr_parse)
-        # word_repr_arc = self.input_projection_arc(word_repr_arc)
-        # word_repr_rel = self.input_projection_rel(word_repr_rel)
-        # word_repr_sup = self.input_projection_sup(word_repr_sup)
-        # word_repr_pos = self.input_projection_pos(word_repr_pos)
-
-        # if self.transformer_layers > 0:
-        #     padding_mask = attention_mask == 0
-        #     token_repr_parse = self.transformer(
-        #         token_repr_parse,
-        #         src_key_padding_mask=padding_mask
-        #     )
+        word_repr_xpos = None
+        if token_repr_xpos is not None:
+            word_repr_xpos, _ = (
+                self._gather_word_representations(
+                    token_repr_xpos,
+                    word_end_positions,
+                )
+            )
 
         tag_logits = None
         if self.projection is not None:
@@ -386,9 +386,13 @@ class ModelForTagging(nn.Module):
         pos_logits = None
         if self.pos_projection is not None:
             pos_logits = self.pos_projection(self.dropout(word_repr_pos))
+        xpos_logits = None
+        if self.xpos_projection is not None:
+            xpos_logits = self.xpos_projection(self.dropout(word_repr_xpos))
 
         S_arc = None
         S_lab = None
+        S_extra_lab = {}
         if self.biaffine is not None:
             root_arc = self.root_arc[None, None, :].expand(
                 word_repr_arc.shape[0], 1, -1
@@ -446,16 +450,18 @@ class ModelForTagging(nn.Module):
                 dim=1,
             )
 
-            S_arc, S_lab = self.biaffine(
+            S_arc, S_lab, S_extra_lab = self.biaffine(
                 parse_repr_arc,
                 parse_repr_rel,
             )
 
         loss = None
         pos_loss = None
+        xpos_loss = None
         arc_loss = None
         label_loss = None
-        factorised_losses = {}
+        extra_loss: dict[str, torch.Tensor] = {}
+        factorised_losses: dict[str, torch.Tensor] = {}
         if (
                 labels is not None and (self.training or report_loss)
                 and tag_logits is not None):
@@ -464,7 +470,6 @@ class ModelForTagging(nn.Module):
                 printinfo=printinfo
             )
 
-        factorised_losses = {}
         if len(factorised_logits) > 0:
             assert l_arg_nums is not None
             assert r_arg_nums is not None
@@ -499,7 +504,8 @@ class ModelForTagging(nn.Module):
                 for i, _ in enumerate(left_label_logits):
                     factorised_losses[
                         f"left_{i+1}"] = losses.calc_loss_helper(
-                        factorised_logits[f"left_{i+1}"], kwargs[f"left_{i+1}"],
+                        factorised_logits[
+                            f"left_{i+1}"], kwargs[f"left_{i+1}"],
                         # left_arg_num >= i+1,
                         printinfo=printinfo
                         )
@@ -507,7 +513,8 @@ class ModelForTagging(nn.Module):
                         right_label_logits):
                     factorised_losses[
                         f"right_{i+1}"] = losses.calc_loss_helper(
-                        factorised_logits[f"right_{i+1}"], kwargs[f"right_{i+1}"],
+                        factorised_logits[
+                            f"right_{i+1}"], kwargs[f"right_{i+1}"],
                         # right_arg_num >= i+1,
                         printinfo=printinfo
                         )
@@ -516,6 +523,12 @@ class ModelForTagging(nn.Module):
             assert pos_logits is not None
             pos_loss = losses.calc_loss_helper(
                 pos_logits, pos_ids,  # word_mask,
+                printinfo=printinfo
+            )
+        if self.xpos_projection is not None:
+            assert xpos_logits is not None
+            xpos_loss = losses.calc_loss_helper(
+                xpos_logits, xpos_ids,  # word_mask,
                 printinfo=printinfo
             )
         if heads is not None:
@@ -531,15 +544,60 @@ class ModelForTagging(nn.Module):
                         parse_mask,
                         printinfo=printinfo,
                     )
-                if self.biaffine.lab_mlp_d is not None:
+                if S_lab is not None:
                     label_loss = self.biaffine.lab_loss(
                         S_lab, heads, deprel_ids,
                         printinfo=printinfo)
+                if len(S_extra_lab) > 0:
+                    extra_loss = self.biaffine.extra_lab_loss(
+                        S_extra_lab, heads, {
+                            s_name: torch.cat(
+                                [
+                                    torch.full(
+                                        (kwargs[s_name].shape[0], 1),
+                                        -1,
+                                        dtype=kwargs[s_name].dtype,
+                                        device=kwargs[s_name].device,
+                                    ),
+                                    kwargs[s_name],
+                                ],
+                                dim=1,
+                            )
+                            for s_name in S_extra_lab.keys()},
+                        printinfo=printinfo)
+
+        feats_losses: dict[str, torch.Tensor] = {}
+        feats_logits: dict[str, torch.Tensor] = {}
+        if len(self.num_feats_tags) > 0 and self.train_feats:
+            for feat in self.num_feats_tags.keys():
+
+                assert self.feats_mixes is not None
+                token_repr = self.feats_mixes[
+                    feat](outputs["hidden_states"])
+
+                word_repr = None
+                word_repr, _ = (
+                    self._gather_word_representations(
+                        token_repr,
+                        word_end_positions,
+                    )
+                )
+                logits = self.feats_projections[feat](self.dropout(word_repr))
+                feats_logits[feat] = logits
+
+                f_loss = losses.calc_loss_helper(
+                    logits, kwargs[feat],
+                    printinfo=printinfo
+                )
+                feats_losses[feat] = f_loss
 
         return (
             loss, tag_logits, pos_loss, pos_logits,
             arc_loss, S_arc, label_loss, S_lab,
-            factorised_losses, factorised_logits)
+            factorised_losses, factorised_logits,
+            xpos_loss, xpos_logits,
+            feats_losses, feats_logits,
+            extra_loss, S_extra_lab)
 
     @staticmethod
     def _gather_word_representations(

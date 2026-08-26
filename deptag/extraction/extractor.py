@@ -509,12 +509,12 @@ def extract(
             # Associate supertags with word dict
             word_to_supertag_to_nums[token["form"]][string] += 1
 
-            # Merge deprels
-            token["deprel"] = deprel_merge(
-                token["deprel"],
-                deprel_to_new,
-                merged_fallback_subtypes,
-                distinguish_merged_fallback_subtypes)
+            # # Merge deprels
+            # token["deprel"] = deprel_merge(
+            #     token["deprel"],
+            #     deprel_to_new,
+            #     merged_fallback_subtypes,
+            #     distinguish_merged_fallback_subtypes)
 
         relative_tags |= set(relative_relations)
         for rel in relative_relations:

@@ -5,7 +5,140 @@ import tqdm
 
 from collections import defaultdict
 
-from typing import overload, Literal, DefaultDict
+from typing import overload, Literal, DefaultDict, Sequence
+
+
+def deprel_func(
+        deprels_from_pred_head: bool,
+        deprels_matrix: bool,
+        pred_deprels: torch.Tensor | None,
+        gold_deprels: torch.Tensor,
+        pred_heads: torch.Tensor | None,
+        gold_heads: torch.Tensor | None,
+        ) -> tuple[np.ndarray | None, np.ndarray]:
+
+    deprel_predictions: np.ndarray | None = None
+    if pred_deprels is not None:
+        if deprels_from_pred_head:
+            assert not deprels_matrix
+            assert pred_heads is not None, (
+                "Cannot use deprels from predicted head "
+                "without head prediction."
+            )
+
+            heads_for_deprel = pred_heads
+
+        else:
+            assert gold_heads is not None
+            # Use gold heads.
+            root_heads = torch.full(
+                (gold_heads.shape[0], 1),
+                -1,
+                dtype=gold_heads.dtype,
+                device=gold_heads.device,
+            )
+
+            heads_for_deprel = torch.cat(
+                [root_heads, gold_heads],
+                dim=1,
+            )
+
+        if deprels_matrix:
+            # outputs[7]: [B, L, H, D]
+            # -> [B, D, H, L]
+            deprel_predictions = (
+                pred_deprels
+                .permute(0, 3, 2, 1)
+                .float()
+                .cpu()
+                .numpy()
+            )
+
+        else:
+            # Replace -1 by 0 solely to make gather legal.
+            safe_heads = heads_for_deprel.clamp_min(0)
+            # [B, D]
+
+            hds = safe_heads[:, None, None, :]
+            # [B, 1, 1, D]
+
+            hds = hds.expand(
+                -1,
+                pred_deprels.size(1),
+                -1,
+                -1,
+            )
+            # [B, L, 1, D]
+
+            deprel_logits = torch.gather(
+                pred_deprels,
+                dim=2,
+                index=hds,
+            ).squeeze(2)
+            # [B, L, D]
+
+            deprel_logits = deprel_logits.transpose(-1, -2)
+            # [B, D, L]
+
+            # max_parse_len = max(
+            #     max_parse_len,
+            #     deprel_logits.shape[1],
+            # )
+
+            deprel_predictions = (
+                deprel_logits.float().cpu().numpy()
+            )
+
+    root_deprel = torch.full(
+        (gold_deprels.shape[0], 1),
+        -1,
+        dtype=gold_deprels.dtype,
+        device=gold_deprels.device,
+    )
+
+    deprel_labels = torch.cat(
+        [root_deprel, gold_deprels],
+        dim=1,
+    )
+
+    return deprel_predictions, deprel_labels.int().cpu().numpy()
+
+
+def pad_deprel_pred(
+        deprel_predictions: Sequence[np.ndarray],
+        max_parse_len: int, deprels_matrix: bool) -> np.ndarray:
+    if deprels_matrix:
+        return np.concatenate([
+            np.pad(
+                deprel_logits,
+                (
+                    (0, 0),
+                    (0, max_parse_len - deprel_logits.shape[1]),
+                    (0, max_parse_len - deprel_logits.shape[2]),
+                    (0, 0)),
+                'constant', constant_values=-np.inf)
+            for deprel_logits in deprel_predictions], axis=0)
+    else:
+        return np.concatenate([
+            np.pad(
+                deprel_logits,
+                (
+                    (0, 0),
+                    (0, max_parse_len - deprel_logits.shape[1]),
+                    (0, 0)),
+                'constant', constant_values=0)
+            for deprel_logits in deprel_predictions], axis=0)
+
+
+def pad_deprel_gold(
+        eval_deprel_labels: Sequence[np.ndarray],
+        max_parse_len: int) -> np.ndarray:
+    return np.concatenate([
+        np.pad(
+            deprel_labels,
+            ((0, 0), (0, max_parse_len - deprel_labels.shape[1])),
+            'constant', constant_values=-1)
+        for deprel_labels in eval_deprel_labels], axis=0)
 
 
 @overload
@@ -19,10 +152,16 @@ def predict(
             np.ndarray | None, np.ndarray | None,
             np.ndarray | None, np.ndarray | None,
             dict[str, np.ndarray], dict[str, np.ndarray],
+            np.ndarray | None, np.ndarray | None,
+            dict[str, np.ndarray], dict[str, np.ndarray],
+            dict[str, np.ndarray], dict[str, np.ndarray],
             np.ndarray,
             np.ndarray | None, np.ndarray | None,
             np.ndarray | None, np.ndarray | None,
-            dict[str, np.ndarray]]:
+            dict[str, np.ndarray],
+            np.ndarray | None,
+            dict[str, np.ndarray],
+            dict[str, np.ndarray],]:
     ...
 
 
@@ -37,10 +176,16 @@ def predict(
             np.ndarray | None, np.ndarray | None,
             np.ndarray | None, np.ndarray | None,
             dict[str, np.ndarray], dict[str, np.ndarray],
+            np.ndarray | None, np.ndarray | None,
+            dict[str, np.ndarray], dict[str, np.ndarray],
+            dict[str, np.ndarray], dict[str, np.ndarray],
+            np.ndarray,
+            None, None,
+            None, None,
+            dict[str, np.ndarray],
             None,
-            None, None,
-            None, None,
-            dict[str, np.ndarray]]:
+            dict[str, np.ndarray],
+            dict[str, np.ndarray],]:
     ...
 
 
@@ -54,9 +199,15 @@ def predict(
             np.ndarray | None, np.ndarray | None,
             np.ndarray | None, np.ndarray | None,
             dict[str, np.ndarray], dict[str, np.ndarray],
+            np.ndarray | None, np.ndarray | None,
+            dict[str, np.ndarray], dict[str, np.ndarray],
+            dict[str, np.ndarray], dict[str, np.ndarray],
+            np.ndarray,
+            np.ndarray | None, np.ndarray | None,
+            np.ndarray | None, np.ndarray | None,
+            dict[str, np.ndarray],
             np.ndarray | None,
-            np.ndarray | None, np.ndarray | None,
-            np.ndarray | None, np.ndarray | None,
+            dict[str, np.ndarray],
             dict[str, np.ndarray]]:
 
     model.eval()
@@ -67,21 +218,34 @@ def predict(
     idx = 0
 
     pos_predictions = []
+    xpos_predictions = []
     eval_pos_labels = []
+    eval_xpos_labels = []
     arc_predictions = []
     eval_heads = []
     deprel_predictions = []
     eval_deprel_labels = []
     factorised_predictions: DefaultDict[
         str, list[np.ndarray]] = defaultdict(list)
+    feats_predictions: DefaultDict[
+        str, list[np.ndarray]] = defaultdict(list)
+    subtypes_predictions: DefaultDict[
+        str, list[np.ndarray]] = defaultdict(list)
     eval_factorised_labels: DefaultDict[
         str, list[np.ndarray]] = defaultdict(list)
+    eval_feats_labels: DefaultDict[
+        str, list[np.ndarray]] = defaultdict(list)
+    eval_subtypes_labels: DefaultDict[
+        str, list[np.ndarray]] = defaultdict(list)
 
-    sup_losses: None | list[np.ndarray] | np.ndarray = []
-    pos_losses: None | list[np.ndarray] | np.ndarray = []
-    arc_losses: None | list[np.ndarray] | np.ndarray = []
-    deprel_losses: None | list[np.ndarray] | np.ndarray = []
+    sup_losses: list[np.ndarray] | np.ndarray = []
+    pos_losses: list[np.ndarray] | np.ndarray = []
+    xpos_losses: list[np.ndarray] | np.ndarray = []
+    arc_losses: list[np.ndarray] | np.ndarray = []
+    deprel_losses: list[np.ndarray] | np.ndarray = []
     factorised_losses: DefaultDict[str, list[np.ndarray]] = defaultdict(list)
+    feats_losses: DefaultDict[str, list[np.ndarray]] = defaultdict(list)
+    subtypes_losses: DefaultDict[str, list[np.ndarray]] = defaultdict(list)
     for batch in tqdm.tqdm(eval_dataloader):
         batch = {k: v.to(device) for k, v in batch.items()}
 
@@ -105,8 +269,8 @@ def predict(
             pos_logits = outputs[3].float().cpu().numpy()
             pos_predictions.append(pos_logits)
             max_len = max(max_len, pos_logits.shape[1])
-            pos_labels = batch['pos_ids'].int().cpu().numpy()
-            eval_pos_labels.append(pos_labels)
+        pos_labels = batch['pos_ids'].int().cpu().numpy()
+        eval_pos_labels.append(pos_labels)
 
         pred_heads = None
         parse_mask = None
@@ -185,129 +349,17 @@ def predict(
                 gold_heads.int().cpu().numpy()
             )
 
-        # if outputs[7] is not None:
-        #     # This reports the accuracy on the label predictions for the
-        #     # correct arc
-        #     if deprels_from_pred_head:
-        #         assert not deprels_matrix
-        #         assert outputs[5] is not None, (
-        #             "Cannot use deprels from predicted head in model without"
-        #             " head prediction."
-        #         )
-        #         heads = eval_heads[-1].argmax(-1)
-        #     else:
-        #         heads = batch['heads']
-        #     # from format [B, lab, Sl, S]
-        #     # into format [B, S, Sl, lab]
-        #     if deprels_matrix:
-        #         deprel_predictions.append(
-        #             outputs[7].permute(0, 3, 2, 1).float().cpu().numpy())
-        #     else:
-        #         # heads with index -1 are padding and are treated as
-        #         # index 0 here (to be disregarded later)
-        #         # print(heads[1])
-        #         hds = heads + (heads < 0)
-
-        #         hds = hds.unsqueeze(1).unsqueeze(2)
-        #         # [batch, 1, 1, sent_len]
-
-        #         hds = hds.expand(-1, outputs[7].size(1), -1, -1)
-        #         # [batch, n_labels, 1, sent_len]
-
-        #         deprel_logits = torch.gather(outputs[7], 2, hds).squeeze(2)
-        #         # [batch, n_labels, sent_len]
-        #         max_len = max(max_len, deprel_logits.shape[1])
-
-        #         deprel_logits = deprel_logits.transpose(-1, -2)
-        #         # [batch, sent_len, n_labels]
-
-        #         deprel_predictions.append(deprel_logits.float().cpu().numpy())
-
-        if outputs[7] is not None:
-            if deprels_from_pred_head:
-                assert not deprels_matrix
-                assert pred_heads is not None, (
-                    "Cannot use deprels from predicted head "
-                    "without head prediction."
-                )
-
-                heads_for_deprel = pred_heads
-
-            else:
-                # Use gold heads.
-                root_heads = torch.full(
-                    (batch["heads"].shape[0], 1),
-                    -1,
-                    dtype=batch["heads"].dtype,
-                    device=batch["heads"].device,
-                )
-
-                heads_for_deprel = torch.cat(
-                    [root_heads, batch["heads"]],
-                    dim=1,
-                )
-
-            if deprels_matrix:
-                # outputs[7]: [B, L, H, D]
-                # -> [B, D, H, L]
-                deprel_predictions.append(
-                    outputs[7]
-                    .permute(0, 3, 2, 1)
-                    .float()
-                    .cpu()
-                    .numpy()
-                )
-
-            else:
-                # Replace -1 by 0 solely to make gather legal.
-                safe_heads = heads_for_deprel.clamp_min(0)
-                # [B, D]
-
-                hds = safe_heads[:, None, None, :]
-                # [B, 1, 1, D]
-
-                hds = hds.expand(
-                    -1,
-                    outputs[7].size(1),
-                    -1,
-                    -1,
-                )
-                # [B, L, 1, D]
-
-                deprel_logits = torch.gather(
-                    outputs[7],
-                    dim=2,
-                    index=hds,
-                ).squeeze(2)
-                # [B, L, D]
-
-                deprel_logits = deprel_logits.transpose(-1, -2)
-                # [B, D, L]
-
-                max_parse_len = max(
-                    max_parse_len,
-                    deprel_logits.shape[1],
-                )
-
-                deprel_predictions.append(
-                    deprel_logits.float().cpu().numpy()
-                )
-
-        root_deprel = torch.full(
-            (batch["deprel_ids"].shape[0], 1),
-            -1,
-            dtype=batch["deprel_ids"].dtype,
-            device=batch["deprel_ids"].device,
+        s_preds, s_labels = deprel_func(
+            deprels_from_pred_head,
+            deprels_matrix,
+            outputs[7],
+            batch["deprel_ids"],
+            pred_heads,
+            batch["heads"]
         )
-
-        deprel_labels = torch.cat(
-            [root_deprel, batch["deprel_ids"]],
-            dim=1,
-        )
-
-        eval_deprel_labels.append(
-            deprel_labels.int().cpu().numpy()
-        )
+        if s_preds is not None:
+            deprel_predictions.append(s_preds)
+        eval_deprel_labels.append(s_labels)
 
         # deprel_labels = batch['deprel_ids'].int().cpu().numpy()
         # eval_deprel_labels.append(deprel_labels)
@@ -318,6 +370,34 @@ def predict(
             max_len = max(max_len, f_logits.shape[1])
             f_labels = batch[f_name].int().cpu().numpy()
             eval_factorised_labels[f_name].append(f_labels)
+
+        if outputs[11] is not None:
+            xpos_logits = outputs[11].float().cpu().numpy()
+            xpos_predictions.append(xpos_logits)
+            max_len = max(max_len, xpos_logits.shape[1])
+        xpos_labels = batch['xpos_ids'].int().cpu().numpy()
+        eval_xpos_labels.append(xpos_labels)
+
+        for f_name, f_logits in outputs[13].items():
+            f_logits = f_logits.float().cpu().numpy()
+            feats_predictions[f_name].append(f_logits)
+            max_len = max(max_len, f_logits.shape[1])
+            f_labels = batch[f_name].int().cpu().numpy()
+            eval_feats_labels[f_name].append(f_labels)
+
+        for f_name, f_logits in outputs[15].items():
+
+            s_preds, s_labels = deprel_func(
+                deprels_from_pred_head,
+                deprels_matrix,
+                f_logits,
+                batch[f_name],
+                pred_heads,
+                batch["heads"]
+            )
+            if s_preds is not None:
+                subtypes_predictions[f_name].append(s_preds)
+            eval_subtypes_labels[f_name].append(s_labels)
 
         # losses
         if outputs[0] is not None:
@@ -339,6 +419,18 @@ def predict(
         if outputs[8] is not None:
             for f_name, f_loss in outputs[8].items():
                 factorised_losses[f_name].append(f_loss.cpu().numpy())
+
+        if outputs[10] is not None:
+            assert isinstance(xpos_losses, list)
+            xpos_losses.append(outputs[10].cpu().numpy())
+
+        if outputs[12] is not None:
+            for f_name, f_loss in outputs[12].items():
+                feats_losses[f_name].append(f_loss.cpu().numpy())
+
+        if outputs[14] is not None:
+            for f_name, f_loss in outputs[14].items():
+                subtypes_losses[f_name].append(f_loss.cpu().numpy())
 
     if len(predictions) > 0:
         predictions_ = np.concatenate([
@@ -374,6 +466,22 @@ def predict(
         pos_predictions_ = None
         eval_pos_labels_ = None
 
+    if len(xpos_predictions) > 0:
+        xpos_predictions_ = np.concatenate([
+            np.pad(
+                xpos_logits,
+                ((0, 0), (0, max_len - xpos_logits.shape[1]), (0, 0)),
+                'constant', constant_values=0)
+            for xpos_logits in xpos_predictions], axis=0)
+        eval_xpos_labels_ = np.concatenate([
+            np.pad(
+                xpos_labels, ((0, 0), (0, max_len - xpos_labels.shape[1])),
+                'constant', constant_values=-1)
+            for xpos_labels in eval_xpos_labels], axis=0)
+    else:
+        xpos_predictions_ = None
+        eval_xpos_labels_ = None
+
     if len(arc_predictions) > 0:
         arc_predictions_ = np.concatenate([
             np.pad(
@@ -394,37 +502,15 @@ def predict(
         eval_heads_ = None
 
     if len(deprel_predictions) > 0:
-        if deprels_matrix:
-            deprel_predictions_ = np.concatenate([
-                np.pad(
-                    deprel_logits,
-                    (
-                        (0, 0),
-                        (0, max_parse_len - deprel_logits.shape[1]),
-                        (0, max_parse_len - deprel_logits.shape[2]),
-                        (0, 0)),
-                    'constant', constant_values=-np.inf)
-                for deprel_logits in deprel_predictions], axis=0)
-        else:
-            deprel_predictions_ = np.concatenate([
-                np.pad(
-                    deprel_logits,
-                    (
-                        (0, 0),
-                        (0, max_parse_len - deprel_logits.shape[1]),
-                        (0, 0)),
-                    'constant', constant_values=0)
-                for deprel_logits in deprel_predictions], axis=0)
+        deprel_predictions_ = pad_deprel_pred(
+            deprel_predictions, max_parse_len, deprels_matrix
+        )
     else:
         deprel_predictions_ = None
 
-    if len(eval_deprel_labels) > 0: 
-        eval_deprel_labels_ = np.concatenate([
-            np.pad(
-                deprel_labels,
-                ((0, 0), (0, max_parse_len - deprel_labels.shape[1])),
-                'constant', constant_values=-1)
-            for deprel_labels in eval_deprel_labels], axis=0)
+    if len(eval_deprel_labels) > 0:
+        eval_deprel_labels_ = pad_deprel_gold(
+            eval_deprel_labels, max_parse_len)
     else:
         eval_deprel_labels_ = None
 
@@ -442,40 +528,82 @@ def predict(
                 'constant', constant_values=-1)
             for labels in eval_factorised_labels[f_name]], axis=0)
 
-    losses = 0
+    feats_predictions_: dict[str, np.ndarray] = dict()
+    eval_feats_labels_: dict[str, np.ndarray] = dict()
+    for f_name, f_predictions in feats_predictions.items():
+        feats_predictions_[f_name] = np.concatenate([
+            np.pad(
+                logits, ((0, 0), (0, max_len - logits.shape[1]), (0, 0)),
+                'constant', constant_values=0)
+            for logits in f_predictions], axis=0)
+        eval_feats_labels_[f_name] = np.concatenate([
+            np.pad(
+                labels, ((0, 0), (0, max_len - labels.shape[1])),
+                'constant', constant_values=-1)
+            for labels in eval_feats_labels[f_name]], axis=0)
+
+    subtypes_predictions_: dict[str, np.ndarray] = dict()
+    eval_subtypes_labels_: dict[str, np.ndarray] = dict()
+    for f_name, f_predictions in subtypes_predictions.items():
+        subtypes_predictions_[f_name] = pad_deprel_pred(
+            f_predictions, max_parse_len, deprels_matrix
+        )
+        eval_subtypes_labels_[f_name] = pad_deprel_gold(
+            eval_subtypes_labels[f_name], max_parse_len)
+
+    losses: np.ndarray = np.zeros(tuple())
     num_losses = 0
     if len(sup_losses) > 0:
-        sup_losses = sum(sup_losses)/len(sup_losses)
-        losses += sup_losses
+        sup_losses_ = sum(sup_losses)/len(sup_losses)
+        losses += sup_losses_
         num_losses += 1
     else:
-        sup_losses = None
+        sup_losses_ = None
 
     if len(pos_losses) > 0:
-        pos_losses = sum(pos_losses)/len(pos_losses)
-        losses += pos_losses
+        pos_losses_ = sum(pos_losses)/len(pos_losses)
+        losses += pos_losses_
         num_losses += 1
     else:
-        pos_losses = None
+        pos_losses_ = None
+
+    if len(xpos_losses) > 0:
+        xpos_losses_ = sum(xpos_losses)/len(xpos_losses)
+        losses += xpos_losses_
+        num_losses += 1
+    else:
+        xpos_losses_ = None
 
     if len(arc_losses) > 0:
-        arc_losses = sum(arc_losses)/len(arc_losses)
-        losses += arc_losses
+        arc_losses_ = sum(arc_losses)/len(arc_losses)
+        losses += arc_losses_
         num_losses += 1
     else:
-        arc_losses = None
+        arc_losses_ = None
 
     if len(deprel_losses) > 0:
-        deprel_losses = sum(deprel_losses)/len(deprel_losses)
-        losses += deprel_losses
+        deprel_losses_ = sum(deprel_losses)/len(deprel_losses)
+        losses += deprel_losses_
         num_losses += 1
     else:
-        deprel_losses = None
+        deprel_losses_ = None
 
     factorised_losses_: dict[str, np.ndarray] = dict()
     for f_name, f_losses in factorised_losses.items():
-        factorised_losses_[f_name] = sum(f_losses)/len(f_losses)
+        factorised_losses_[f_name] = np.sum(f_losses)/len(f_losses)
         losses += factorised_losses_[f_name]
+        num_losses += 1
+
+    feats_losses_: dict[str, np.ndarray] = dict()
+    for f_name, f_losses in feats_losses.items():
+        feats_losses_[f_name] = np.sum(f_losses)/len(f_losses)
+        losses += feats_losses_[f_name]
+        num_losses += 1
+
+    subtypes_losses_: dict[str, np.ndarray] = dict()
+    for f_name, f_losses in subtypes_losses.items():
+        subtypes_losses_[f_name] = np.sum(f_losses)/len(f_losses)
+        losses += subtypes_losses_[f_name]
         num_losses += 1
 
     return (
@@ -484,8 +612,12 @@ def predict(
         arc_predictions_, eval_heads_,
         deprel_predictions_, eval_deprel_labels_,
         factorised_predictions_, eval_factorised_labels_,
-        losses, sup_losses, pos_losses, arc_losses, deprel_losses,
-        factorised_losses_)
+        xpos_predictions_, eval_xpos_labels_,
+        feats_predictions_, eval_feats_labels_,
+        subtypes_predictions_, eval_subtypes_labels_,
+        losses, sup_losses_, pos_losses_, arc_losses_, deprel_losses_,
+        factorised_losses_, xpos_losses_, feats_losses_,
+        subtypes_losses_,)
 
 
 def calc_tag_accuracy(
