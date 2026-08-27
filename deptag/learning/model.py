@@ -116,22 +116,12 @@ class ModelForTagging(nn.Module):
         self.sup_mix = None
         self.sup_arg_mix = None
         self.sup_head_mix = None
-        if self.factorised is not False:
-            self.sup_arg_mix = LayerMix(config.num_hidden_layers)
-            self.sup_head_mix = LayerMix(config.num_hidden_layers)
-        else:
-            self.sup_mix = LayerMix(config.num_hidden_layers)
-
-        # self.input_projection_parse = nn.Linear(
-        #     transformer_input_dim, config.hidden_size)
-        # self.input_projection_arc = nn.Linear(
-        #     transformer_input_dim, config.hidden_size)
-        # self.input_projection_rel = nn.Linear(
-        #     transformer_input_dim, config.hidden_size)
-        # self.input_projection_sup = nn.Linear(
-        #     transformer_input_dim, config.hidden_size)
-        # self.input_projection_pos = nn.Linear(
-        #     transformer_input_dim, config.hidden_size)
+        if self.train_sup:
+            if self.factorised is not False:
+                self.sup_arg_mix = LayerMix(config.num_hidden_layers)
+                self.sup_head_mix = LayerMix(config.num_hidden_layers)
+            else:
+                self.sup_mix = LayerMix(config.num_hidden_layers)
 
         if self.transformer_layers > 0:
             encoder_layer = nn.TransformerEncoderLayer(
@@ -187,19 +177,11 @@ class ModelForTagging(nn.Module):
             else:
                 self.projection = get_sequential(
                     config.num_labels)
-            # self.projection = nn.Sequential(
-            #     nn.Linear(config.hidden_size, config.num_labels))
         self.pos_projection = None
         if config.task_specific_params["train_pos"]:
-            # self.pos_projection = nn.Sequential(
-            #     nn.Linear(config.hidden_size, self.num_pos_tags)
-            # )
             self.pos_projection = get_sequential(self.num_pos_tags)
         self.xpos_projection = None
         if config.task_specific_params["train_xpos"]:
-            # self.pos_projection = nn.Sequential(
-            #     nn.Linear(config.hidden_size, self.num_pos_tags)
-            # )
             self.xpos_projection = get_sequential(self.num_xpos_tags)
 
         self.feats_projections = None
@@ -235,23 +217,23 @@ class ModelForTagging(nn.Module):
             nn.init.normal_(self.root_arc, std=0.02)
             nn.init.normal_(self.root_rel, std=0.02)
 
-            self.extra_num_labels=config.task_specific_params[
+            self.extra_num_labels = config.task_specific_params[
                 "extra_num_labels"]
-            self.train_subtypes=config.task_specific_params[
+            self.train_subtypes = config.task_specific_params[
                 "train_subtypes"]
-            self.pos_label_smoothing=config.task_specific_params[
+            self.pos_label_smoothing = config.task_specific_params[
                 "pos_label_smoothing"]
-            self.xpos_label_smoothing=config.task_specific_params[
+            self.xpos_label_smoothing = config.task_specific_params[
                 "xpos_label_smoothing"]
-            self.arc_label_smoothing=config.task_specific_params[
+            self.arc_label_smoothing = config.task_specific_params[
                 "arc_label_smoothing"]
-            self.deprel_label_smoothing=config.task_specific_params[
+            self.deprel_label_smoothing = config.task_specific_params[
                 "deprel_label_smoothing"]
-            self.sup_label_smoothing=config.task_specific_params[
+            self.sup_label_smoothing = config.task_specific_params[
                 "sup_label_smoothing"]
-            self.feats_label_smoothing=config.task_specific_params[
+            self.feats_label_smoothing = config.task_specific_params[
                 "feats_label_smoothing"]
-            self.subtypes_label_smoothing=config.task_specific_params[
+            self.subtypes_label_smoothing = config.task_specific_params[
                 "subtypes_label_smoothing"]
 
     def forward(
@@ -293,11 +275,12 @@ class ModelForTagging(nn.Module):
         token_repr_sup = None
         token_repr_sup_arg = None
         token_repr_sup_head = None
-        if self.factorised is not False:
-            token_repr_sup_arg = self.sup_arg_mix(outputs["hidden_states"])
-            token_repr_sup_head = self.sup_head_mix(outputs["hidden_states"])
-        else:
-            token_repr_sup = self.sup_mix(outputs["hidden_states"])
+        if self.train_sup:
+            if self.factorised is not False:
+                token_repr_sup_arg = self.sup_arg_mix(outputs["hidden_states"])
+                token_repr_sup_head = self.sup_head_mix(outputs["hidden_states"])
+            else:
+                token_repr_sup = self.sup_mix(outputs["hidden_states"])
         token_repr_pos = None
         if self.pos_mix is not None:
             token_repr_pos = self.pos_mix(outputs["hidden_states"])
@@ -326,29 +309,30 @@ class ModelForTagging(nn.Module):
         word_repr_sup_arg = None
         word_repr_sup_head = None
 
-        if self.factorised is not False:
-            assert token_repr_sup_arg is not None
-            assert token_repr_sup_head is not None
-            word_repr_sup_arg, _ = (
-                self._gather_word_representations(
-                    token_repr_sup_arg,
-                    word_end_positions,
+        if self.train_sup:
+            if self.factorised is not False:
+                assert token_repr_sup_arg is not None
+                assert token_repr_sup_head is not None
+                word_repr_sup_arg, _ = (
+                    self._gather_word_representations(
+                        token_repr_sup_arg,
+                        word_end_positions,
+                    )
                 )
-            )
-            word_repr_sup_head, _ = (
-                self._gather_word_representations(
-                    token_repr_sup_head,
-                    word_end_positions,
+                word_repr_sup_head, _ = (
+                    self._gather_word_representations(
+                        token_repr_sup_head,
+                        word_end_positions,
+                    )
                 )
-            )
-        else:
-            assert token_repr_sup is not None
-            word_repr_sup, _ = (
-                self._gather_word_representations(
-                    token_repr_sup,
-                    word_end_positions,
+            else:
+                assert token_repr_sup is not None
+                word_repr_sup, _ = (
+                    self._gather_word_representations(
+                        token_repr_sup,
+                        word_end_positions,
+                    )
                 )
-            )
 
         word_repr_pos = None
         if token_repr_pos is not None:
@@ -368,39 +352,42 @@ class ModelForTagging(nn.Module):
             )
 
         tag_logits = None
-        if self.projection is not None:
-            tag_logits = self.projection(self.dropout(word_repr_sup))
-
         factorised_logits = {}
-        if self.factorised is not False:
-            l_num_logits = self.l_num_projection(
-                self.dropout(word_repr_sup_arg))
-            r_num_logits = self.r_num_projection(
-                self.dropout(word_repr_sup_arg))
-            aux_position_logits = self.aux_position_projection(
-                self.dropout(word_repr_sup_head))
+        if self.train_sup:
+            if self.projection is not None:
+                tag_logits = self.projection(self.dropout(word_repr_sup))
 
-            factorised_logits = {
-                "l_arg_nums": l_num_logits,
-                "r_arg_nums": r_num_logits,
-                "aux_positions": aux_position_logits,
-            }
-            if self.factorised in ("complete", "seen"):
-                aux_label_logits = self.aux_label_projection(
+            if self.factorised is not False:
+                l_num_logits = self.l_num_projection(
+                    self.dropout(word_repr_sup_arg))
+                r_num_logits = self.r_num_projection(
+                    self.dropout(word_repr_sup_arg))
+                aux_position_logits = self.aux_position_projection(
                     self.dropout(word_repr_sup_head))
-                left_label_logits = [
-                    projection(self.dropout(word_repr_sup_arg)) for projection
-                    in self.left_labels_projections
-                ]
-                right_label_logits = [
-                    projection(self.dropout(word_repr_sup_arg)) for projection
-                    in self.right_labels_projections
-                ]
-                factorised_logits["aux_rel_ids"] = aux_label_logits
-                for i, logits in enumerate(left_label_logits):
-                    factorised_logits[f"left_{i+1}"] = logits
-                for i, logits in enumerate(right_label_logits):
-                    factorised_logits[f"right_{i+1}"] = logits
+
+                factorised_logits = {
+                    "l_arg_nums": l_num_logits,
+                    "r_arg_nums": r_num_logits,
+                    "aux_positions": aux_position_logits,
+                }
+                if self.factorised in ("complete", "seen"):
+                    aux_label_logits = self.aux_label_projection(
+                        self.dropout(word_repr_sup_head))
+                    left_label_logits = [
+                        projection(
+                            self.dropout(word_repr_sup_arg)) for projection
+                        in self.left_labels_projections
+                    ]
+                    right_label_logits = [
+                        projection(
+                            self.dropout(word_repr_sup_arg)) for projection
+                        in self.right_labels_projections
+                    ]
+                    factorised_logits["aux_rel_ids"] = aux_label_logits
+                    for i, logits in enumerate(left_label_logits):
+                        factorised_logits[f"left_{i+1}"] = logits
+                    for i, logits in enumerate(right_label_logits):
+                        factorised_logits[f"right_{i+1}"] = logits
 
         pos_logits = None
         if self.pos_projection is not None:
