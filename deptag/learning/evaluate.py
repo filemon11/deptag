@@ -615,7 +615,7 @@ def predict(
         xpos_predictions_, eval_xpos_labels_,
         feats_predictions_, eval_feats_labels_,
         subtypes_predictions_, eval_subtypes_labels_,
-        losses, sup_losses_, pos_losses_, arc_losses_, deprel_losses_,
+        losses / num_losses, sup_losses_, pos_losses_, arc_losses_, deprel_losses_,
         factorised_losses_, xpos_losses_, feats_losses_,
         subtypes_losses_,)
 

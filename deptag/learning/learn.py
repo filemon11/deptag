@@ -673,6 +673,7 @@ def get_eval_metric(
         k_head_scores: int,
         t_sup: float = 1,
         t_arc: float = 1,
+        sup_score_scale: float = 1.0,
         ) -> float:
     eval_metric: float
     match eval_metric_type:
@@ -780,7 +781,8 @@ def get_eval_metric(
                 root_sup_id=root_sup_id,
                 k_supertag=k_supertag,
                 k_head_scores=k_head_scores,
-                t_arc=t_arc
+                t_arc=t_arc,
+                sup_score_scale=sup_score_scale,
             )
 
             assert eval_deprel_labels is not None
@@ -1275,28 +1277,6 @@ def train_command(args: settings.Settings):
                     deprels_matrix=True)
             )
 
-            num_losses = 0
-            if dev_sup_loss is not None:
-                num_losses += 1
-            if dev_arc_loss is not None:
-                num_losses += 1
-            if dev_pos_loss is not None:
-                num_losses += 1
-            if dev_xpos_loss is not None:
-                num_losses += 1
-            if dev_deprel_loss is not None:
-                num_losses += 1
-            if dev_factorised_losses is not None:
-                for f_loss in dev_factorised_losses.values():
-                    num_losses += 1
-            if dev_feats_losses is not None:
-                for f_loss in dev_feats_losses.values():
-                    num_losses += 1
-            if dev_subtypes_losses is not None:
-                for f_loss in dev_subtypes_losses.values():
-                    num_losses += 1
-            dev_loss /= num_losses
-
             if args.tagging.use_tensorboard:
                 assert writer is not None
                 writer.add_scalar(
@@ -1463,6 +1443,7 @@ def train_command(args: settings.Settings):
                 k_head_scores=k_head_scores,
                 t_arc=t_arc,
                 t_sup=t_sup,
+                sup_score_scale= args.tagging.sup_score_scale,
             )
 
             writer.add_scalar(
@@ -1973,6 +1954,7 @@ def evaluate_command(args: settings.Settings, k: int = 1):
         k_head_scores=args.tagging.k_head_scores,
         t_arc=t_arc,
         t_sup=t_sup,
+        sup_score_scale= args.tagging.sup_score_scale,
     )
 
     print(

@@ -12,28 +12,57 @@ from typing import Literal
 
 class LayerMix(nn.Module):
     # Proposed by https://aclanthology.org/D19-1279.pdf ?
-    def __init__(self, num_layers: int):
+    # Layer dropout by https://nejlt.ep.liu.se/article/view/4932
+    def __init__(
+            self, num_layers: int,
+            layer_dropout: float = 0.1,
+            ):
         super().__init__()
         self.weights = nn.Parameter(
             torch.zeros(num_layers)
         )
+        self.gamma = nn.Parameter(torch.tensor(1.0))
+        self.layer_dropout = layer_dropout
 
     def forward(
             self,
             hidden_states: tuple[torch.Tensor, ...],
             ) -> torch.Tensor:
-        if len(hidden_states) != len(self.weights) + 1:
+
+        if len(hidden_states) != self.weights.numel() + 1:
             raise ValueError(
-                f"Expected {len(self.weights) + 1} hidden states "
-                f"(embedding + {len(self.weights)} layers), "
+                f"Expected {self.weights.numel() + 1} hidden states "
+                f"(embedding + {self.weights.numel()} layers), "
                 f"got {len(hidden_states)}."
             )
 
-        # omit hidden_states[0], the embedding layer
+        # [L, B, S, H]
         hs = torch.stack(hidden_states[1:], dim=0)
-        weights = torch.softmax(self.weights, dim=0)
 
-        return torch.sum(
+        logits: torch.Tensor = self.weights
+
+        if self.training and self.layer_dropout > 0:
+            keep = (
+                torch.rand_like(logits) >= self.layer_dropout
+            )
+
+            # Avoid pathological case in which every layer is dropped.
+            if not keep.any():
+                keep[
+                    torch.randint(
+                        len(keep),
+                        (1,),
+                        device=keep.device,
+                    )
+                ] = True
+
+            logits = logits.masked_fill(~keep, float("-inf"))
+
+        # [L]
+        weights = torch.softmax(logits, dim=0)
+
+        # [B, S, H]
+        return self.gamma * torch.sum(
             weights[:, None, None, None] * hs,
             dim=0,
         )
@@ -101,10 +130,51 @@ class ModelForTagging(nn.Module):
         self.xpos_mix = None
         if config.task_specific_params["train_xpos"]:
             self.xpos_mix = LayerMix(config.num_hidden_layers)
-        self.arc_mix = LayerMix(config.num_hidden_layers)
+
+        biaffine_input_dim = transformer_input_dim
+        self.parse_contextualisation = False
+
+        self.arc_mix = None
         self.rel_mix = None
-        if config.task_specific_params["mlp_lab_hidden"] is not None:
-            self.rel_mix = LayerMix(config.num_hidden_layers)
+        self.parse_mix = None
+        self.parse_proj = None
+        self.head_proj = None
+        self.rel_proj = None
+        self.parse_encoder = None
+        if self.parse_contextualisation:
+            self.parse_mix = LayerMix(num_layers=config.num_hidden_layers)
+
+            # self.parse_proj = nn.Sequential(
+            #     nn.Linear(transformer_input_dim, biaffine_input_dim),
+            #     nn.GELU(),
+            # )
+
+            self.head_proj = nn.Sequential(
+                nn.Linear(biaffine_input_dim, biaffine_input_dim),
+                nn.GELU(),
+            )
+            if config.task_specific_params["mlp_lab_hidden"] is not None:
+                self.rel_proj = nn.Sequential(
+                    nn.Linear(biaffine_input_dim, biaffine_input_dim),
+                    nn.GELU(),
+                )
+
+            # self.parse_encoder = nn.Identity()
+            self.parse_encoder = nn.TransformerEncoderLayer(
+                d_model=transformer_input_dim,  # biaffine_input_dim,
+                nhead=8,
+                dim_feedforward=biaffine_input_dim*4,
+                dropout=0.1,
+                activation="gelu",
+                batch_first=True,
+                norm_first=True,
+            )
+
+            # biaffine_input_dim = 512
+        else:
+            self.arc_mix = LayerMix(config.num_hidden_layers)
+            if config.task_specific_params["mlp_lab_hidden"] is not None:
+                self.rel_mix = LayerMix(config.num_hidden_layers)
 
         self.feats_mixes = None
         if self.train_feats:
@@ -198,14 +268,15 @@ class ModelForTagging(nn.Module):
                 config.task_specific_params["mlp_arc_hidden"] is not None
                 or config.task_specific_params["mlp_lab_hidden"] is not None):
             self.biaffine = biaffine.make_model(
-                transformer_input_dim,
+                biaffine_input_dim,
                 config.task_specific_params["mlp_arc_hidden"],
                 config.task_specific_params["mlp_lab_hidden"],
                 config.task_specific_params["mlp_dropout"],
                 config.task_specific_params["mlp_num_labels"],
                 config.task_specific_params[
                     "extra_num_labels"] if config.task_specific_params[
-                        "train_subtypes"] else None
+                        "train_subtypes"] else None,
+                single=False,  # self.parse_contextualisation
             )
             # self.biaffine.compile()  # (dynamic=True)
             self.root_arc = nn.Parameter(
@@ -267,18 +338,26 @@ class ModelForTagging(nn.Module):
         )
         # num_layers = len(outputs["hidden_states"])-1
         # token_repr_parse = outputs["hidden_states"][self.parse_layer]
-        token_repr_arc = self.arc_mix(outputs["hidden_states"])
+        token_repr_arc = None
         token_repr_rel = None
-        if self.rel_mix is not None:
-            token_repr_rel = self.rel_mix(outputs["hidden_states"])
+        token_repr_parse = None
+        if self.parse_contextualisation:
+            token_repr_parse = self.parse_mix(outputs["hidden_states"])
+        else:
+            token_repr_arc = self.arc_mix(outputs["hidden_states"])
+            token_repr_rel = None
+            if self.rel_mix is not None:
+                token_repr_rel = self.rel_mix(outputs["hidden_states"])
 
         token_repr_sup = None
         token_repr_sup_arg = None
         token_repr_sup_head = None
         if self.train_sup:
             if self.factorised is not False:
-                token_repr_sup_arg = self.sup_arg_mix(outputs["hidden_states"])
-                token_repr_sup_head = self.sup_head_mix(outputs["hidden_states"])
+                token_repr_sup_arg = self.sup_arg_mix(
+                    outputs["hidden_states"])
+                token_repr_sup_head = self.sup_head_mix(
+                    outputs["hidden_states"])
             else:
                 token_repr_sup = self.sup_mix(outputs["hidden_states"])
         token_repr_pos = None
@@ -289,21 +368,34 @@ class ModelForTagging(nn.Module):
             token_repr_xpos = self.xpos_mix(outputs["hidden_states"])
         # print(num_layers, round(num_layers*(2/3)), round(num_layers*(1/3)))
 
-        word_repr_arc, word_mask = (
-            self._gather_word_representations(
-                token_repr_arc,
-                word_end_positions,
-            )
-        )
-
         word_repr_rel = None
-        if token_repr_rel is not None:
-            word_repr_rel, _ = (
+        word_repr_arc = None
+        word_repr_parse: torch.Tensor | None = None
+        if self.parse_contextualisation:
+            assert token_repr_parse is not None
+            word_repr_parse, word_mask = (
                 self._gather_word_representations(
-                    token_repr_rel,
+                    token_repr_parse,
                     word_end_positions,
                 )
             )
+        else:
+            assert token_repr_arc is not None
+            word_repr_arc, word_mask = (
+                self._gather_word_representations(
+                    token_repr_arc,
+                    word_end_positions,
+                )
+            )
+
+            word_repr_rel = None
+            if token_repr_rel is not None:
+                word_repr_rel, _ = (
+                    self._gather_word_representations(
+                        token_repr_rel,
+                        word_end_positions,
+                    )
+                )
 
         word_repr_sup = None
         word_repr_sup_arg = None
@@ -399,67 +491,140 @@ class ModelForTagging(nn.Module):
         S_arc = None
         S_lab = None
         S_extra_lab = {}
-        if self.biaffine is not None:
-            root_arc = self.root_arc[None, None, :].expand(
-                word_repr_arc.shape[0], 1, -1
-            )
-            root_rel = self.root_rel[None, None, :].expand(
-                word_repr_arc.shape[0], 1, -1
-            )
+        if self.parse_contextualisation:
+            # assert self.parse_proj is not None
+            assert self.head_proj is not None
+            # assert self.rel_proj is not None
+            assert word_repr_parse is not None
+            word_repr_rel = None
+            # word_repr_parse = self.parse_proj(word_repr_parse)
+            word_repr_parse = self.parse_encoder(word_repr_parse)
+            word_repr_head = self.head_proj(word_repr_parse)
+            if self.rel_proj is not None:
+                word_repr_rel = self.rel_proj(word_repr_parse)
+            assert word_repr_parse is not None
+            if self.biaffine is not None:
+                root_arc = self.root_arc[None, None, :].expand(
+                    word_repr_head.shape[0], 1, -1
+                )
+                root_rel = self.root_rel[None, None, :].expand(
+                    word_repr_head.shape[0], 1, -1
+                )
 
-            parse_repr_arc = torch.cat(
-                [root_arc, word_repr_arc],
-                dim=1,
-            )
+                parse_repr_head = torch.cat(
+                    [root_arc, word_repr_head],
+                    dim=1,
+                )
+                parse_repr_rel = None
+                if word_repr_rel is not None:
+                    parse_repr_rel = torch.cat(
+                        [root_rel, word_repr_rel],
+                        dim=1,
+                    )
 
-            parse_repr_rel = None
-            if word_repr_rel is not None:
-                parse_repr_rel = torch.cat(
-                    [root_rel, word_repr_rel],
+                root_mask = torch.ones(
+                    (word_mask.shape[0], 1),
+                    dtype=torch.bool,
+                    device=word_mask.device,
+                )
+
+                parse_mask = torch.cat(
+                    [root_mask, word_mask],
+                    dim=1,
+                )
+                # [B, W + 1]
+
+                root_heads = torch.full(
+                    (heads.shape[0], 1),
+                    -1,
+                    dtype=heads.dtype,
+                    device=heads.device,
+                )
+
+                heads = torch.cat(
+                    [root_heads, heads],
                     dim=1,
                 )
 
-            root_mask = torch.ones(
-                (word_mask.shape[0], 1),
-                dtype=torch.bool,
-                device=word_mask.device,
-            )
+                deprel_ids = torch.cat(
+                    [
+                        torch.full(
+                            (deprel_ids.shape[0], 1),
+                            -1,
+                            dtype=deprel_ids.dtype,
+                            device=deprel_ids.device,
+                        ),
+                        deprel_ids,
+                    ],
+                    dim=1,
+                )
 
-            parse_mask = torch.cat(
-                [root_mask, word_mask],
-                dim=1,
-            )
-            # [B, W + 1]
+                S_arc, S_lab, S_extra_lab = self.biaffine(
+                    parse_repr_head, parse_repr_rel
+                )
+        else:
+            if self.biaffine is not None:
+                assert word_repr_arc is not None
+                root_arc = self.root_arc[None, None, :].expand(
+                    word_repr_arc.shape[0], 1, -1
+                )
+                root_rel = self.root_rel[None, None, :].expand(
+                    word_repr_arc.shape[0], 1, -1
+                )
 
-            root_heads = torch.full(
-                (heads.shape[0], 1),
-                -1,
-                dtype=heads.dtype,
-                device=heads.device,
-            )
+                parse_repr_arc = torch.cat(
+                    [root_arc, word_repr_arc],
+                    dim=1,
+                )
 
-            heads = torch.cat(
-                [root_heads, heads],
-                dim=1,
-            )
+                parse_repr_rel = None
+                if word_repr_rel is not None:
+                    parse_repr_rel = torch.cat(
+                        [root_rel, word_repr_rel],
+                        dim=1,
+                    )
 
-            deprel_ids = torch.cat(
-                [
-                    torch.full(
-                        (deprel_ids.shape[0], 1),
-                        -1,
-                        dtype=deprel_ids.dtype,
-                        device=deprel_ids.device,
-                    ),
-                    deprel_ids,
-                ],
-                dim=1,
-            )
+                root_mask = torch.ones(
+                    (word_mask.shape[0], 1),
+                    dtype=torch.bool,
+                    device=word_mask.device,
+                )
 
-            S_arc, S_lab, S_extra_lab = self.biaffine(
-                parse_repr_arc,
-                parse_repr_rel,
-            )
+                parse_mask = torch.cat(
+                    [root_mask, word_mask],
+                    dim=1,
+                )
+                # [B, W + 1]
+
+                root_heads = torch.full(
+                    (heads.shape[0], 1),
+                    -1,
+                    dtype=heads.dtype,
+                    device=heads.device,
+                )
+
+                heads = torch.cat(
+                    [root_heads, heads],
+                    dim=1,
+                )
+
+                deprel_ids = torch.cat(
+                    [
+                        torch.full(
+                            (deprel_ids.shape[0], 1),
+                            -1,
+                            dtype=deprel_ids.dtype,
+                            device=deprel_ids.device,
+                        ),
+                        deprel_ids,
+                    ],
+                    dim=1,
+                )
+
+                S_arc, S_lab, S_extra_lab = self.biaffine(
+                    parse_repr_arc,
+                    parse_repr_rel,
+                )
 
         loss = None
         pos_loss = None

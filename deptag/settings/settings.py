@@ -78,6 +78,7 @@ class TaggingSettings:
     sup_label_smoothing: float = 0.0
     feats_label_smoothing: float = 0.0
     subtypes_label_smoothing: float = 0.0
+    sup_score_scale: float = 1.0
 
 
 @dataclasses.dataclass(frozen=True)

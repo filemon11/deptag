@@ -3079,10 +3079,12 @@ def chart(
         k_supertag: int = 10,
         k_head_scores: int = 10,
         t_arc: float = 1,
+        sup_score_scale: float = 1.0,
         ) -> tuple[np.ndarray, np.ndarray]:
 
     start = timer()
 
+    supertag_scores = supertag_scores * sup_score_scale
     chunksize = 1
     stack = multiprocessing.Pool(processes=get_eval_workers()).map(
         process,

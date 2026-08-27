@@ -73,8 +73,10 @@ class BiAffineParser(nn.Module):
             mlp_input: int, mlp_arc_hidden: int | None,
             mlp_lab_hidden: int | None, mlp_dropout: float,
             num_labels: int | None,
-            extra_num_labels: dict[str, int] | None = None,):
+            extra_num_labels: dict[str, int] | None = None,
+            single: bool = False,):
         super(BiAffineParser, self).__init__()
+        self.single = single
 
         # Arc MLPs
         self.arc_mlp_h = None
@@ -112,13 +114,16 @@ class BiAffineParser(nn.Module):
 
     # @torch.compile()
     def forward(
-            self, h_arc: torch.Tensor | None, h_lab: torch.Tensor | None,
+            self, h_arc: torch.Tensor | None,
+            h_lab: torch.Tensor | None = None,
             *args, **kwargs
             ) -> tuple[
                 torch.Tensor | None,
                 torch.Tensor | None,
                 dict[str, torch.Tensor] | None]:
         """Compute the score matrices for the arcs and labels."""
+        if self.single:
+            assert h_lab is None
 
         arc_h = None
         arc_d = None
@@ -130,9 +135,12 @@ class BiAffineParser(nn.Module):
         lab_h = None
         lab_d = None
         if self.lab_mlp_h is not None and self.lab_mlp_d is not None:
-            assert h_lab is not None
-            lab_h = self.lab_mlp_h(h_lab).contiguous()
-            lab_d = self.lab_mlp_d(h_lab).contiguous()
+            if self.single:
+                lab_h = self.lab_mlp_h(h_arc).contiguous()
+                lab_d = self.lab_mlp_d(h_arc).contiguous()
+            else:
+                lab_h = self.lab_mlp_h(h_lab).contiguous()
+                lab_d = self.lab_mlp_d(h_lab).contiguous()
 
         S_arc = None
         if self.arc_biaffine is not None:
@@ -299,7 +307,8 @@ def make_model(
         mlp_lab_hidden: int | None,
         mlp_dropout: float,
         num_labels: int | None,
-        extra_num_labels: dict[str, int] | None) -> BiAffineParser:
+        extra_num_labels: dict[str, int] | None,
+        single: bool = False) -> BiAffineParser:
     """Initiliaze a the BiAffine parser according to the specs in args."""
 
     # Initialize the model.
@@ -310,6 +319,7 @@ def make_model(
         mlp_dropout,
         num_labels,
         extra_num_labels=extra_num_labels,
+        single=single,
     )
 
     # Initialize parameters with Glorot.
