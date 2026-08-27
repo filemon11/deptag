@@ -235,6 +235,25 @@ class ModelForTagging(nn.Module):
             nn.init.normal_(self.root_arc, std=0.02)
             nn.init.normal_(self.root_rel, std=0.02)
 
+            self.extra_num_labels=config.task_specific_params[
+                "extra_num_labels"]
+            self.train_subtypes=config.task_specific_params[
+                "train_subtypes"]
+            self.pos_label_smoothing=config.task_specific_params[
+                "pos_label_smoothing"]
+            self.xpos_label_smoothing=config.task_specific_params[
+                "xpos_label_smoothing"]
+            self.arc_label_smoothing=config.task_specific_params[
+                "arc_label_smoothing"]
+            self.deprel_label_smoothing=config.task_specific_params[
+                "deprel_label_smoothing"]
+            self.sup_label_smoothing=config.task_specific_params[
+                "sup_label_smoothing"]
+            self.feats_label_smoothing=config.task_specific_params[
+                "feats_label_smoothing"]
+            self.subtypes_label_smoothing=config.task_specific_params[
+                "subtypes_label_smoothing"]
+
     def forward(
             self,
             input_ids=None,
@@ -467,6 +486,7 @@ class ModelForTagging(nn.Module):
                 and tag_logits is not None):
             loss = losses.calc_loss_helper(
                 tag_logits, labels,  # word_mask,
+                label_smoothing=self.sup_label_smoothing,
                 printinfo=printinfo
             )
 
@@ -477,14 +497,17 @@ class ModelForTagging(nn.Module):
             assert aux_rel_ids is not None
             l_num_loss = losses.calc_loss_helper(
                 factorised_logits["l_arg_nums"], l_arg_nums,
+                label_smoothing=self.sup_label_smoothing,
                 printinfo=printinfo
                 )
             r_num_loss = losses.calc_loss_helper(
                 factorised_logits["r_arg_nums"], r_arg_nums,
+                label_smoothing=self.sup_label_smoothing,
                 printinfo=printinfo
                 )
             aux_position_loss = losses.calc_loss_helper(
                 factorised_logits["aux_positions"], aux_positions,
+                label_smoothing=self.sup_label_smoothing,
                 printinfo=printinfo
                 )
             factorised_losses = {
@@ -497,6 +520,7 @@ class ModelForTagging(nn.Module):
                 # no_aux_index = math.floor((self.max_l+self.max_r+3)/3)-1
                 factorised_losses["aux_rel_ids"] = losses.calc_loss_helper(
                     factorised_logits["aux_rel_ids"], aux_rel_ids,
+                    label_smoothing=self.sup_label_smoothing,
                     # aux_labels != no_aux_index,
                     printinfo=printinfo
                     )
@@ -506,6 +530,7 @@ class ModelForTagging(nn.Module):
                         f"left_{i+1}"] = losses.calc_loss_helper(
                         factorised_logits[
                             f"left_{i+1}"], kwargs[f"left_{i+1}"],
+                        label_smoothing=self.sup_label_smoothing,
                         # left_arg_num >= i+1,
                         printinfo=printinfo
                         )
@@ -515,6 +540,7 @@ class ModelForTagging(nn.Module):
                         f"right_{i+1}"] = losses.calc_loss_helper(
                         factorised_logits[
                             f"right_{i+1}"], kwargs[f"right_{i+1}"],
+                        label_smoothing=self.sup_label_smoothing,
                         # right_arg_num >= i+1,
                         printinfo=printinfo
                         )
@@ -523,30 +549,30 @@ class ModelForTagging(nn.Module):
             assert pos_logits is not None
             pos_loss = losses.calc_loss_helper(
                 pos_logits, pos_ids,  # word_mask,
+                label_smoothing=self.pos_label_smoothing,
                 printinfo=printinfo
             )
         if self.xpos_projection is not None:
             assert xpos_logits is not None
             xpos_loss = losses.calc_loss_helper(
                 xpos_logits, xpos_ids,  # word_mask,
+                label_smoothing=self.xpos_label_smoothing,
                 printinfo=printinfo
             )
         if heads is not None:
             if self.biaffine is not None:
                 if self.biaffine.arc_mlp_d is not None:
-                    # arc_loss = self.biaffine.arc_loss(
-                    #     S_arc, heads, attention_mask.bool(),
-                    #     printinfo=printinfo)
-                    # print("arc_loss", arc_loss)
                     arc_loss = self.biaffine.arc_loss(
                         S_arc,
                         heads,
                         parse_mask,
+                        label_smoothing=self.arc_label_smoothing,
                         printinfo=printinfo,
                     )
                 if S_lab is not None:
                     label_loss = self.biaffine.lab_loss(
                         S_lab, heads, deprel_ids,
+                        label_smoothing=self.deprel_label_smoothing,
                         printinfo=printinfo)
                 if len(S_extra_lab) > 0:
                     extra_loss = self.biaffine.extra_lab_loss(
@@ -564,6 +590,7 @@ class ModelForTagging(nn.Module):
                                 dim=1,
                             )
                             for s_name in S_extra_lab.keys()},
+                        label_smoothing=self.subtypes_label_smoothing,
                         printinfo=printinfo)
 
         feats_losses: dict[str, torch.Tensor] = {}
@@ -587,6 +614,7 @@ class ModelForTagging(nn.Module):
 
                 f_loss = losses.calc_loss_helper(
                     logits, kwargs[feat],
+                    label_smoothing=self.feats_label_smoothing,
                     printinfo=printinfo
                 )
                 feats_losses[feat] = f_loss

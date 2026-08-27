@@ -71,6 +71,13 @@ class TaggingSettings:
     k_head_scores: int = 5
     t_arc: float = 1
     t_sup: float = 1
+    pos_label_smoothing: float = 0.0
+    xpos_label_smoothing: float = 0.0
+    arc_label_smoothing: float = 0.0
+    deprel_label_smoothing: float = 0.0
+    sup_label_smoothing: float = 0.0
+    feats_label_smoothing: float = 0.0
+    subtypes_label_smoothing: float = 0.0
 
 
 @dataclasses.dataclass(frozen=True)

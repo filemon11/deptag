@@ -181,6 +181,13 @@ def generate_config(
         train_feats: bool = False,
         extra_num_labels: None | dict[str, int] = None,
         train_subtypes: bool = False,
+        pos_label_smoothing: float = 0.0,
+        xpos_label_smoothing: float = 0.0,
+        arc_label_smoothing: float = 0.0,
+        deprel_label_smoothing: float = 0.0,
+        sup_label_smoothing: float = 0.0,
+        feats_label_smoothing: float = 0.0,
+        subtypes_label_smoothing: float = 0.0,
         ) -> transformers.PretrainedConfig:
 
     config = transformers.AutoConfig.from_pretrained(
@@ -214,7 +221,7 @@ def generate_config(
         "num_xpos_tags": num_xpos_tags,
         "extra_num_labels": extra_num_labels,
         "train_subtypes": train_subtypes,
-        "dropout": 0.2,
+        "dropout": 0.1,
         "use_pos": False,
 
         "n_heads": config.num_attention_heads,
@@ -237,7 +244,7 @@ def generate_config(
             200 if train_deprel or train_subtypes else None
             # previously 100
         ),
-        "mlp_dropout": 0.3,
+        "mlp_dropout": 0.2,
         "mlp_num_labels": (
             num_deprel_tags
             if train_deprel
@@ -252,6 +259,13 @@ def generate_config(
 
         "num_feats_tags": num_feats_tags,
         "train_feats": train_feats,
+        "pos_label_smoothing": pos_label_smoothing,
+        "xpos_label_smoothing": xpos_label_smoothing,
+        "arc_label_smoothing": arc_label_smoothing,
+        "deprel_label_smoothing": deprel_label_smoothing,
+        "sup_label_smoothing": sup_label_smoothing,
+        "feats_label_smoothing": feats_label_smoothing,
+        "subtypes_label_smoothing": subtypes_label_smoothing,
     }
 
     return config
@@ -271,6 +285,13 @@ def initialize_model(
         factorised: Literal['structural', 'complete', 'seen', False] = False,
         extra_num_labels: dict[str, int] | None = None,
         train_subtypes: bool = False,
+        pos_label_smoothing: float = 0.0,
+        xpos_label_smoothing: float = 0.0,
+        arc_label_smoothing: float = 0.0,
+        deprel_label_smoothing: float = 0.0,
+        sup_label_smoothing: float = 0.0,
+        feats_label_smoothing: float = 0.0,
+        subtypes_label_smoothing: float = 0.0,
         ) -> model.ModelForTagging | None:
     config = generate_config(
         model_type, tag_system, model_path, train_pos=train_pos,
@@ -284,9 +305,16 @@ def initialize_model(
         train_feats=train_feats,
         extra_num_labels=extra_num_labels,
         train_subtypes=train_subtypes,
+        pos_label_smoothing=pos_label_smoothing,
+        xpos_label_smoothing=xpos_label_smoothing,
+        arc_label_smoothing=arc_label_smoothing,
+        deprel_label_smoothing=deprel_label_smoothing,
+        sup_label_smoothing=sup_label_smoothing,
+        feats_label_smoothing=feats_label_smoothing,
+        subtypes_label_smoothing=subtypes_label_smoothing,
     )
     tagging_model = model.ModelForTagging(config=config)
-    # torch.compiler.reset()
+    tagging_model.compile()
     return tagging_model
     # if model_type in BERT:
     #     m = model.ModelForTagging(config=config)
@@ -967,6 +995,13 @@ def train_command(args: settings.Settings):
             subtype: len(dic) for subtype, dic
             in train_dataset.subtypes_dicts.items()},
         train_subtypes=args.tagging.train_subtypes,
+        pos_label_smoothing=args.tagging.pos_label_smoothing,
+        xpos_label_smoothing=args.tagging.xpos_label_smoothing,
+        arc_label_smoothing=args.tagging.arc_label_smoothing,
+        deprel_label_smoothing=args.tagging.deprel_label_smoothing,
+        sup_label_smoothing=args.tagging.sup_label_smoothing,
+        feats_label_smoothing=args.tagging.feats_label_smoothing,
+        subtypes_label_smoothing=args.tagging.subtypes_label_smoothing,
     )
     assert model is not None
     model.to(device)
@@ -1719,7 +1754,14 @@ def evaluate_command(args: settings.Settings, k: int = 1):
             subtype: len(dic)
             for subtype, dic
             in eval_dataset.subtypes_dicts.items()},
-        train_subtypes=args.tagging.train_subtypes,)
+        train_subtypes=args.tagging.train_subtypes,
+        pos_label_smoothing=args.tagging.pos_label_smoothing,
+        xpos_label_smoothing=args.tagging.xpos_label_smoothing,
+        arc_label_smoothing=args.tagging.arc_label_smoothing,
+        deprel_label_smoothing=args.tagging.deprel_label_smoothing,
+        sup_label_smoothing=args.tagging.sup_label_smoothing,
+        feats_label_smoothing=args.tagging.feats_label_smoothing,
+        subtypes_label_smoothing=args.tagging.subtypes_label_smoothing,)
 
     assert model is not None
 
@@ -1987,7 +2029,14 @@ def predict_command(args: settings.Settings):
             subtype: len(dic)
             for subtype, dic
             in pred_dataset.subtypes_dicts.items()},
-        train_subtypes=args.tagging.train_subtypes,)
+        train_subtypes=args.tagging.train_subtypes,
+        pos_label_smoothing=args.tagging.pos_label_smoothing,
+        xpos_label_smoothing=args.tagging.xpos_label_smoothing,
+        arc_label_smoothing=args.tagging.arc_label_smoothing,
+        deprel_label_smoothing=args.tagging.deprel_label_smoothing,
+        sup_label_smoothing=args.tagging.sup_label_smoothing,
+        feats_label_smoothing=args.tagging.feats_label_smoothing,
+        subtypes_label_smoothing=args.tagging.subtypes_label_smoothing,)
     assert model is not None
 
     model.load_state_dict(
