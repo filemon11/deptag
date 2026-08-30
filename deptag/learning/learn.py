@@ -1220,36 +1220,6 @@ def train_command(args: settings.Settings):
                     loss: torch.Tensor = torch.zeros(
                         (1,), device="cpu" if device == torch.device("cpu")
                         else "cuda")
-                    # num_losses: int = 0
-                    # if sup_loss is not None:
-                    #     loss += sup_loss
-                    #     num_losses += 1
-                    # if arc_loss is not None:
-                    #     loss += arc_loss
-                    #     num_losses += 1
-                    # if pos_loss is not None:
-                    #     loss += pos_loss
-                    #     num_losses += 1
-                    # if xpos_loss is not None:
-                    #     loss += xpos_loss
-                    #     num_losses += 1
-                    # if deprel_loss is not None:
-                    #     loss += deprel_loss
-                    #     num_losses += 1
-                    # if factorised_losses is not None:
-                    #     for f_loss in factorised_losses.values():
-                    #         loss += f_loss
-                    #         num_losses += 1
-                    # if feats_losses is not None:
-                    #     for f_loss in feats_losses.values():
-                    #         loss += f_loss
-                    #         num_losses += 1
-                    # if subtypes_losses is not None:
-                    #     for f_loss in subtypes_losses.values():
-                    #         loss += f_loss
-                    #         num_losses += 1
-                    # loss /= num_losses
-                    # sup_weight = 1.0
 
                     primary_loss = torch.stack(
                         [losses[name] for name in primary_loss_names]).mean()
@@ -1260,10 +1230,11 @@ def train_command(args: settings.Settings):
                         aux_loss = losses[name]
                         if aux_loss is not None:
                             if isinstance(aux_loss, dict):
-                                for feat_name, feat_loss in aux_loss.items():
-                                    loss = loss + feat_loss
-                                    pcgrad_aux_losses[feat_name] = (
-                                        feat_loss, 1.0)
+                                feats_loss = torch.stack(
+                                    list(aux_loss.values())).mean()
+                                loss = loss + feats_loss
+                                pcgrad_aux_losses[name] = (
+                                    feats_loss, 1.0)
                             else:
                                 loss = loss + aux_loss
                                 pcgrad_aux_losses[name] = (aux_loss, 1.0)
