@@ -145,6 +145,17 @@ def pcgrad_corrections(
             )
             / (primary_norm_sq + eps)
         )
+        if not (
+            torch.isfinite(cosine)
+            and torch.isfinite(coefficient)
+        ):
+            stats[name] = {
+                "cosine": None,
+                "coefficient": None,
+                "aux_norm": None,
+                "norm_ratio": None,
+            }
+            continue
 
         total_coefficient += coefficient
 
