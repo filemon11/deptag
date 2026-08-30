@@ -17,6 +17,7 @@ import pathlib
 from . import model, dataset, evaluate, factorisation, pcgrad
 from .. import extraction, data, settings, parsing, utils
 import dataclasses
+from collections import defaultdict
 
 from typing import Mapping, Sequence, Self, Type, Literal
 
@@ -1120,6 +1121,11 @@ def train_command(args: settings.Settings):
     # state dict:
     # n_iter, best_acc, tol, args.tagging.epochs, epo
 
+    loss_weights = defaultdict(
+        lambda: 1.0,
+        args.tagging.loss_weights if args.tagging.loss_weights is not None
+        else dict())
+
     # TODO: change
     k_supertag = args.tagging.k_supertag
     k_head_scores = args.tagging.k_head_scores
@@ -1222,40 +1228,25 @@ def train_command(args: settings.Settings):
                         else "cuda")
 
                     primary_loss = torch.stack(
-                        [losses[name] for name in primary_loss_names]).mean()
+                        [
+                            losses[name]*loss_weights[name]
+                            for name in primary_loss_names]).sum()
                     loss = primary_loss
 
                     pcgrad_aux_losses = {}
                     for name in auxiliary_loss_names:
                         aux_loss = losses[name]
+
                         if aux_loss is not None:
                             if isinstance(aux_loss, dict):
-                                feats_loss = torch.stack(
+                                if len(aux_loss) == 0:
+                                    continue
+
+                                aux_loss = torch.stack(
                                     list(aux_loss.values())).mean()
-                                loss = loss + feats_loss
-                                pcgrad_aux_losses[name] = (
-                                    feats_loss, 1.0)
-                            else:
-                                loss = loss + aux_loss
-                                pcgrad_aux_losses[name] = (aux_loss, 1.0)
-                    # if sup_loss is not None:
-                    #     loss = loss + sup_loss
-                    # if pos_loss is not None:
-                    #     loss = loss + pos_loss
-
-                    # pcgrad_aux_losses = {}
-
-                    # if sup_loss is not None:
-                    #     pcgrad_aux_losses["SUP"] = (
-                    #         sup_loss,
-                    #         1.0,
-                    #     )
-
-                    # if pos_loss is not None:
-                    #     pcgrad_aux_losses["POS"] = (
-                    #         pos_loss,
-                    #         1.0,
-                    #     )
+                            loss = loss + aux_loss * loss_weights[name]
+                            pcgrad_aux_losses[name] = (
+                                aux_loss, loss_weights[name])
 
                     pcgrad_corrections = None
                     pcgrad_stats = {}

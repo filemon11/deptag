@@ -79,6 +79,7 @@ class TaggingSettings:
     feats_label_smoothing: float = 0.0
     subtypes_label_smoothing: float = 0.0
     sup_score_scale: float = 1.0
+    loss_weights: None | dict[str, float] = None
 
 
 @dataclasses.dataclass(frozen=True)
