@@ -14,7 +14,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.amp.grad_scaler import GradScaler
 import tqdm
 import pathlib
-from . import model, dataset, evaluate, factorisation
+from . import model, dataset, evaluate, factorisation, pcgrad
 from .. import extraction, data, settings, parsing, utils
 import dataclasses
 
@@ -25,6 +25,7 @@ from typing import Mapping, Sequence, Self, Type, Literal
 # torch.backends.cuda.enable_math_sdp(True)
 
 import transformers.utils.output_capturing as hf_output_capturing
+torch._functorch.config.donated_buffer = False
 
 # Work around Transformers 5.9 + PyTorch 2.6 Dynamo incompatibility.
 # This only changes the current Python process.
@@ -316,14 +317,6 @@ def initialize_model(
     tagging_model = model.ModelForTagging(config=config)
     tagging_model.compile()
     return tagging_model
-    # if model_type in BERT:
-    #     m = model.ModelForTagging(config=config)
-    #     torch.compiler.reset()
-    #     # m = torch.compile(m, dynamic=True)  # type: ignore
-    # else:
-    #     logging.error("Invalid model type")
-    #     return None
-    # return m
 
 
 def initialize_optimizer_and_scheduler(
@@ -877,9 +870,9 @@ def gather_deprels_for_gold_arcs(
         eval_arc_labels: None | np.ndarray,
         ) -> np.ndarray | None:
     if (
-        deprel_predictions is not None
-        and eval_deprel_labels is not None
-        ):
+            deprel_predictions is not None
+            and eval_deprel_labels is not None
+            ):
         assert eval_arc_labels is not None
 
         # eval_arc_labels: [B, D]
@@ -1079,6 +1072,12 @@ def train_command(args: settings.Settings):
     if not args.tagging.use_tensorboard:
         writer = None
 
+    pcgrad_params = [
+        p
+        for p in model.encoder.parameters()
+        if p.requires_grad
+    ]
+
     seen_factors = None
     valid_factors = None
     valid_supertag2id = None
@@ -1157,6 +1156,20 @@ def train_command(args: settings.Settings):
                         "cpu" if device == torch.device("cpu") else "cuda",
                         enabled=True, dtype=torch.float16
                         ):
+                    # main losses:
+                    # MST las: arc + deprel
+                    # MST uas: arc
+                    # A* unfactorised no merge: arc + sup
+                    # A* unfactorised merge las: arc + sup + pos
+                    # A* unfactorised merge uas: arc + sup
+                    # A* factorised all/seen deprels from A* no merge: arc + factorised
+                    # A* factorised all/seen deprels from A* merge las: arc + factorised + pos
+                    # A* factorised all/seen deprels from A* merge uas: arc + factorised
+                    # A* factorised all/seen deprels not from A* las: arc + factorised + deprel
+                    # A* factorised all/seen deprels not from A* uas: arc + factorised
+                    # A* factorised structural from A* las: arc + factorised + deprel
+                    # A* factorised structural from A* uas: arc + factorised
+
                     outputs = model(**batch)
 
                     sup_loss = outputs[0]
@@ -1167,45 +1180,166 @@ def train_command(args: settings.Settings):
                     xpos_loss = outputs[10]
                     feats_losses = outputs[12]
                     subtypes_losses = outputs[14]
+                    losses = {
+                        "sup_loss": outputs[0],
+                        "pos_loss": outputs[2],
+                        "arc_loss": outputs[4],
+                        "deprel_loss": outputs[6],
+                        "xpos_loss": outputs[10],
+                        "feats_losses": outputs[12],
+                        "subtypes_losses": outputs[14],
+                    }
+
+                    if factorised_losses is not None and len(
+                            factorised_losses) > 0:
+                        sup_loss = torch.stack(
+                            list(factorised_losses.values())).mean()
+                        losses["sup_loss"] = sup_loss
+
+                    primary_loss_names = {"arc_loss"}
+                    if "a*" in args.tagging.eval_metric:
+                        primary_loss_names.add("sup_loss")
+
+                    if (
+                            args.tagging.eval_metric == "mst-las"
+                            or (
+                                not args.tagging.deprels_from_supertags
+                                and "uas" not in args.tagging.eval_metric)):
+                        primary_loss_names.add("deprel_loss")
+
+                    if (
+                            args.deprels.merged is not None
+                            and len(args.deprels.merged) > 0
+                            and "a*" in args.tagging.eval_metric
+                            and args.tagging.deprels_from_supertags):
+                        primary_loss_names.add("pos_loss")
+
+                    auxiliary_loss_names = set(
+                        losses.keys()) - primary_loss_names
 
                     loss: torch.Tensor = torch.zeros(
                         (1,), device="cpu" if device == torch.device("cpu")
                         else "cuda")
-                    num_losses: int = 0
-                    if sup_loss is not None:
-                        loss += sup_loss
-                        num_losses += 1
-                    if arc_loss is not None:
-                        loss += arc_loss
-                        num_losses += 1
-                    if pos_loss is not None:
-                        # loss = args.tagging.loss_ratio*loss + (
-                        #     1-args.tagging.loss_ratio)*pos_loss
-                        loss += pos_loss
-                        num_losses += 1
-                    if xpos_loss is not None:
-                        # loss = args.tagging.loss_ratio*loss + (
-                        #     1-args.tagging.loss_ratio)*pos_loss
-                        loss += xpos_loss
-                        num_losses += 1
-                    if deprel_loss is not None:
-                        loss += deprel_loss
-                        num_losses += 1
-                    if factorised_losses is not None:
-                        for f_loss in factorised_losses.values():
-                            loss += f_loss
-                            num_losses += 1
-                    if feats_losses is not None:
-                        for f_loss in feats_losses.values():
-                            loss += f_loss
-                            num_losses += 1
-                    if subtypes_losses is not None:
-                        for f_loss in subtypes_losses.values():
-                            loss += f_loss
-                            num_losses += 1
-                    loss /= num_losses
+                    # num_losses: int = 0
+                    # if sup_loss is not None:
+                    #     loss += sup_loss
+                    #     num_losses += 1
+                    # if arc_loss is not None:
+                    #     loss += arc_loss
+                    #     num_losses += 1
+                    # if pos_loss is not None:
+                    #     loss += pos_loss
+                    #     num_losses += 1
+                    # if xpos_loss is not None:
+                    #     loss += xpos_loss
+                    #     num_losses += 1
+                    # if deprel_loss is not None:
+                    #     loss += deprel_loss
+                    #     num_losses += 1
+                    # if factorised_losses is not None:
+                    #     for f_loss in factorised_losses.values():
+                    #         loss += f_loss
+                    #         num_losses += 1
+                    # if feats_losses is not None:
+                    #     for f_loss in feats_losses.values():
+                    #         loss += f_loss
+                    #         num_losses += 1
+                    # if subtypes_losses is not None:
+                    #     for f_loss in subtypes_losses.values():
+                    #         loss += f_loss
+                    #         num_losses += 1
+                    # loss /= num_losses
+                    # sup_weight = 1.0
+
+                    primary_loss = torch.stack(
+                        [losses[name] for name in primary_loss_names]).mean()
+                    loss = primary_loss
+
+                    pcgrad_aux_losses = {}
+                    for name in auxiliary_loss_names:
+                        aux_loss = losses[name]
+                        if aux_loss is not None:
+                            if isinstance(aux_loss, dict):
+                                for feat_name, feat_loss in aux_loss.items():
+                                    loss = loss + feat_loss
+                                    pcgrad_aux_losses[feat_name] = (
+                                        feat_loss, 1.0)
+                            else:
+                                loss = loss + aux_loss
+                                pcgrad_aux_losses[name] = (aux_loss, 1.0)
+                    # if sup_loss is not None:
+                    #     loss = loss + sup_loss
+                    # if pos_loss is not None:
+                    #     loss = loss + pos_loss
+
+                    # pcgrad_aux_losses = {}
+
+                    # if sup_loss is not None:
+                    #     pcgrad_aux_losses["SUP"] = (
+                    #         sup_loss,
+                    #         1.0,
+                    #     )
+
+                    # if pos_loss is not None:
+                    #     pcgrad_aux_losses["POS"] = (
+                    #         pos_loss,
+                    #         1.0,
+                    #     )
+
+                    pcgrad_corrections = None
+                    pcgrad_stats = {}
+
+                    if pcgrad_aux_losses:
+                        (
+                            pcgrad_corrections,
+                            pcgrad_stats,
+                        ) = pcgrad.pcgrad_corrections(
+                            primary_loss=primary_loss,
+                            aux_losses=pcgrad_aux_losses,
+                            shared_params=pcgrad_params,
+                            scaler=scaler,
+                            grad_acc=args.tagging.grad_acc,
+                            global_loss_scale=1.0,
+                        )
+
+                if args.tagging.use_tensorboard:
+                    for name, stats in pcgrad_stats.items():
+                        if stats["cosine"] is None:
+                            continue
+
+                        writer.add_scalar(
+                            f"GradCosine/{name}_vs_Parse",
+                            stats["cosine"].item(),
+                            n_iter,
+                        )
+
+                        writer.add_scalar(
+                            f"GradNorm/{name}_to_Parse",
+                            stats["norm_ratio"].item(),
+                            n_iter,
+                        )
+
+                        writer.add_scalar(
+                            f"PCGrad/{name}_coefficient",
+                            stats["coefficient"].item(),
+                            n_iter,
+                        )
 
                 scaler.scale(loss / args.tagging.grad_acc).backward()
+
+                if pcgrad_corrections is not None:
+                    with torch.no_grad():
+                        for p, correction in zip(
+                                pcgrad_params,
+                                pcgrad_corrections,
+                                ):
+                            if correction is None:
+                                continue
+
+                            if p.grad is None:
+                                p.grad = correction.clone()
+                            else:
+                                p.grad.add_(correction)
 
                 if (i + 1) % args.tagging.grad_acc == 0:
                     if args.tagging.use_tensorboard:
@@ -1411,7 +1545,7 @@ def train_command(args: settings.Settings):
                 combined_acc += f_dev_acc
             for f_dev_acc in dev_feats_accs.values():
                 combined_acc += f_dev_acc
-            combined_acc /= num_losses
+            # combined_acc /= num_losses
 
             assert eval_labels is not None
             eval_metric: float = get_eval_metric(
@@ -1421,7 +1555,9 @@ def train_command(args: settings.Settings):
                 combined_acc=combined_acc,
                 sup_predictions=predictions,
                 arc_predictions=arc_predictions,
-                pos_predictions=pos_predictions,
+                pos_predictions=(
+                    pos_predictions if args.deprels.merged is not None
+                    and len(args.deprels.merged) > 0 else None),
                 deprel_predictions=deprel_predictions,
                 factorised_predictions=factorised_predictions,
                 seen_supertag_logps=seen_supertag_logps,
@@ -1443,7 +1579,7 @@ def train_command(args: settings.Settings):
                 k_head_scores=k_head_scores,
                 t_arc=t_arc,
                 t_sup=t_sup,
-                sup_score_scale= args.tagging.sup_score_scale,
+                sup_score_scale=args.tagging.sup_score_scale,
             )
 
             writer.add_scalar(
@@ -1932,7 +2068,9 @@ def evaluate_command(args: settings.Settings, k: int = 1):
         combined_acc=0,
         sup_predictions=predictions,
         arc_predictions=arc_predictions,
-        pos_predictions=pos_predictions,
+        pos_predictions=(
+            pos_predictions if args.deprels.merged is not None
+            and len(args.deprels.merged) > 0 else None),
         deprel_predictions=deprel_predictions,
         factorised_predictions=factorised_predictions,
         seen_supertag_logps=seen_supertag_logps,
