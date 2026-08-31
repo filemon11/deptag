@@ -48,9 +48,9 @@ class TaggingSettings:
     # lr: float
     epochs: int
     grad_acc: int = 1
-    warmup_epochs: int = 5,
-    encoder_lr: float = 0.00001,
-    head_lr: float = 0.0001,
+    warmup_epochs: int = 5
+    encoder_lr: float = 0.00001
+    head_lr: float = 0.0001
     weight_decay: float = 0.01
     tol: int = 99999
     tag_vocab_path: str = "vocab"
