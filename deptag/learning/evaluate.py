@@ -606,6 +606,7 @@ def predict(
         losses += subtypes_losses_[f_name]
         num_losses += 1
 
+    model.train()
     return (
         predictions_, eval_labels_,
         pos_predictions_, eval_pos_labels_,
