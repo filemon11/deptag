@@ -1356,6 +1356,13 @@ def train_command(args: settings.Settings):
                     n_iter += 1
                     t += 1
 
+                    for j, group in enumerate(optimizer.param_groups):
+                        writer.add_scalar(
+                            f"LR/group_{j}",
+                            group["lr"],
+                            n_iter,
+                        )
+
         if True:  # evaluation at the end of epoch
             (
                 predictions, eval_labels,
