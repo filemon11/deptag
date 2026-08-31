@@ -1079,6 +1079,10 @@ def train_command(args: settings.Settings):
         if p.requires_grad
     ]
 
+    pcgrad_accumulator = pcgrad.make_accumulator(
+        pcgrad_params
+    )
+
     seen_factors = None
     valid_factors = None
     valid_supertag2id = None
@@ -1255,14 +1259,9 @@ def train_command(args: settings.Settings):
 
                     loss = loss * global_loss_scale
 
-                    pcgrad_corrections = None
-                    pcgrad_stats = {}
-
                     if pcgrad_aux_losses:
-                        (
-                            pcgrad_corrections,
-                            pcgrad_stats,
-                        ) = pcgrad.pcgrad_corrections(
+                        pcgrad.accumulate_task_gradients(
+                            accumulator=pcgrad_accumulator,
                             primary_loss=primary_loss,
                             aux_losses=pcgrad_aux_losses,
                             shared_params=pcgrad_params,
@@ -1271,37 +1270,49 @@ def train_command(args: settings.Settings):
                             global_loss_scale=global_loss_scale,
                         )
 
-                if args.tagging.use_tensorboard:
-                    for name, stats in pcgrad_stats.items():
-                        if stats["cosine"] is None:
-                            continue
-
-                        writer.add_scalar(
-                            f"GradCosine/{name}_vs_Parse",
-                            stats["cosine"].item(),
-                            n_iter,
-                        )
-
-                        writer.add_scalar(
-                            f"GradNorm/{name}_to_Parse",
-                            stats["norm_ratio"].item(),
-                            n_iter,
-                        )
-
-                        writer.add_scalar(
-                            f"PCGrad/{name}_coefficient",
-                            stats["coefficient"].item(),
-                            n_iter,
-                        )
-
                 scaler.scale(loss / args.tagging.grad_acc).backward()
 
-                if pcgrad_corrections is not None:
+                if (i + 1) % args.tagging.grad_acc == 0:
+                    pcgrad_corrections = None
+                    pcgrad_stats = {}
+
+                    (
+                        pcgrad_corrections,
+                        pcgrad_stats,
+                    ) = pcgrad.compute_corrections(
+                        accumulator=pcgrad_accumulator,
+                        scaler=scaler,
+                    )
+
+                    if args.tagging.use_tensorboard:
+                        for name, stats in pcgrad_stats.items():
+                            if stats["cosine"] is None:
+                                continue
+
+                            writer.add_scalar(
+                                f"GradCosine/{name}_vs_Parse",
+                                stats["cosine"].item(),
+                                n_iter,
+                            )
+
+                            writer.add_scalar(
+                                f"GradNorm/{name}_to_Parse",
+                                stats["norm_ratio"].item(),
+                                n_iter,
+                            )
+
+                            writer.add_scalar(
+                                f"PCGrad/{name}_coefficient",
+                                stats["coefficient"].item(),
+                                n_iter,
+                            )
+
                     with torch.no_grad():
                         for p, correction in zip(
                                 pcgrad_params,
                                 pcgrad_corrections,
                                 ):
+
                             if correction is None:
                                 continue
 
@@ -1310,7 +1321,6 @@ def train_command(args: settings.Settings):
                             else:
                                 p.grad.add_(correction)
 
-                if (i + 1) % args.tagging.grad_acc == 0:
                     if args.tagging.use_tensorboard:
                         assert writer is not None
                         writer.add_scalar(
@@ -1352,6 +1362,10 @@ def train_command(args: settings.Settings):
                     scheduler.step()
                     scaler.update()
                     optimizer.zero_grad()
+
+                    pcgrad_accumulator = pcgrad.make_accumulator(
+                        pcgrad_params
+                    )
 
                     n_iter += 1
                     t += 1

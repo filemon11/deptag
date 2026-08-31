@@ -1,5 +1,7 @@
 import torch
 
+from dataclasses import dataclass, field
+
 
 def pcgrad_corrections(
         primary_loss: torch.Tensor,
@@ -301,3 +303,302 @@ def pcgrad_correction(
             )
 
     return corrections, cosine
+
+
+@dataclass
+class PCGradAccumulator:
+    primary: list[torch.Tensor | None]
+    auxiliaries: dict[
+        str,
+        list[torch.Tensor | None],
+    ] = field(default_factory=dict)
+
+
+def make_accumulator(
+        shared_params: list[torch.nn.Parameter],
+        ) -> PCGradAccumulator:
+
+    return PCGradAccumulator(
+        primary=[None] * len(shared_params),
+    )
+
+
+def _accumulate_grads(
+        buffer: list[torch.Tensor | None],
+        grads: tuple[torch.Tensor | None, ...],
+        ) -> None:
+
+    with torch.no_grad():
+        for i, grad in enumerate(grads):
+            if grad is None:
+                continue
+
+            grad = grad.detach()
+
+            if buffer[i] is None:
+                buffer[i] = grad.clone()
+            else:
+                buffer[i].add_(grad)
+
+
+def accumulate_task_gradients(
+        accumulator: PCGradAccumulator,
+        primary_loss: torch.Tensor,
+        aux_losses: dict[
+            str,
+            tuple[torch.Tensor, float],
+        ],
+        shared_params: list[torch.nn.Parameter],
+        scaler: torch.amp.GradScaler,
+        grad_acc: int,
+        global_loss_scale: float = 1.0,
+        ) -> None:
+    """
+    Accumulate the unprojected primary and auxiliary gradients.
+
+    The gradients are:
+      - AMP-scaled;
+      - divided by grad_acc;
+      - scaled exactly as in the ordinary loss.
+
+    They are detached before being stored, so the computation graph
+    itself is not retained across microbatches.
+    """
+
+    # ------------------------------------------------------------
+    # Primary task
+    # ------------------------------------------------------------
+
+    scaled_primary = scaler.scale(
+        global_loss_scale
+        * primary_loss
+        / grad_acc
+    )
+
+    primary_grads = torch.autograd.grad(
+        scaled_primary,
+        shared_params,
+        retain_graph=True,
+        create_graph=False,
+        allow_unused=True,
+    )
+
+    _accumulate_grads(
+        accumulator.primary,
+        primary_grads,
+    )
+
+    # ------------------------------------------------------------
+    # Auxiliary tasks
+    # ------------------------------------------------------------
+
+    for name, (aux_loss, aux_weight) in aux_losses.items():
+
+        if (
+            aux_loss is None
+            or not aux_loss.requires_grad
+        ):
+            continue
+
+        scaled_aux = scaler.scale(
+            global_loss_scale
+            * aux_weight
+            * aux_loss
+            / grad_acc
+        )
+
+        aux_grads = torch.autograd.grad(
+            scaled_aux,
+            shared_params,
+            retain_graph=True,
+            create_graph=False,
+            allow_unused=True,
+        )
+
+        if name not in accumulator.auxiliaries:
+            accumulator.auxiliaries[name] = [
+                None
+            ] * len(shared_params)
+
+        _accumulate_grads(
+            accumulator.auxiliaries[name],
+            aux_grads,
+        )
+
+
+def compute_corrections(
+        accumulator: PCGradAccumulator,
+        scaler: torch.amp.GradScaler,
+        eps: float = 1e-12,
+        ) -> tuple[
+            list[torch.Tensor | None],
+            dict[str, dict[str, torch.Tensor | None]],
+        ]:
+    """
+    Apply asymmetric PCGrad to the accumulated effective-batch
+    gradients.
+
+    Returned corrections are still AMP-scaled and can therefore be
+    added directly to p.grad before scaler.unscale_(optimizer).
+    """
+
+    primary_grads = accumulator.primary
+
+    if not any(
+        grad is not None
+        for grad in primary_grads
+    ):
+        return (
+            [None] * len(primary_grads),
+            {},
+        )
+
+    amp_scale = scaler.get_scale()
+
+    corrections: list[torch.Tensor | None] = [
+        None
+    ] * len(primary_grads)
+
+    stats = {}
+
+    for name, aux_grads in (
+            accumulator.auxiliaries.items()
+            ):
+
+        dot = None
+        primary_norm_sq = None
+        aux_norm_sq = None
+
+        for g_p, g_a in zip(
+                primary_grads,
+                aux_grads,
+                ):
+
+            if g_p is None or g_a is None:
+                continue
+
+            # Remove AMP scaling for statistics / coefficient
+            # calculation.
+            g_p_unscaled = (
+                g_p.float() / amp_scale
+            )
+            g_a_unscaled = (
+                g_a.float() / amp_scale
+            )
+
+            current_dot = (
+                g_p_unscaled
+                * g_a_unscaled
+            ).sum()
+
+            current_p_norm = (
+                g_p_unscaled.square().sum()
+            )
+
+            current_a_norm = (
+                g_a_unscaled.square().sum()
+            )
+
+            if dot is None:
+                dot = current_dot
+                primary_norm_sq = current_p_norm
+                aux_norm_sq = current_a_norm
+            else:
+                dot += current_dot
+                primary_norm_sq += current_p_norm
+                aux_norm_sq += current_a_norm
+
+        # No common differentiable parameters for this task.
+        if dot is None:
+            stats[name] = {
+                "cosine": None,
+                "coefficient": None,
+                "aux_norm": None,
+                "norm_ratio": None,
+            }
+            continue
+
+        assert primary_norm_sq is not None
+        assert aux_norm_sq is not None
+
+        primary_norm = primary_norm_sq.sqrt()
+        aux_norm = aux_norm_sq.sqrt()
+
+        if (
+            primary_norm_sq <= eps
+            or aux_norm_sq <= eps
+        ):
+            stats[name] = {
+                "cosine": None,
+                "coefficient": None,
+                "aux_norm": aux_norm,
+                "norm_ratio": None,
+            }
+            continue
+
+        cosine = dot / (
+            primary_norm * aux_norm + eps
+        )
+
+        coefficient = (
+            torch.minimum(
+                dot,
+                torch.zeros_like(dot),
+            )
+            / (primary_norm_sq + eps)
+        )
+
+        if not (
+            torch.isfinite(cosine)
+            and torch.isfinite(coefficient)
+        ):
+            stats[name] = {
+                "cosine": None,
+                "coefficient": None,
+                "aux_norm": None,
+                "norm_ratio": None,
+            }
+            continue
+
+        stats[name] = {
+            "cosine": cosine,
+            "coefficient": coefficient,
+            "aux_norm": aux_norm,
+            "norm_ratio": (
+                aux_norm
+                / (primary_norm + eps)
+            ),
+        }
+
+        # No conflict -> no correction.
+        if coefficient >= 0:
+            continue
+
+        # g_aux' - g_aux
+        #
+        # = -coefficient * g_primary
+        #
+        # Apply only to parameters that actually occur in both
+        # gradients.
+        with torch.no_grad():
+            for i, (g_p, g_a) in enumerate(
+                    zip(primary_grads, aux_grads)
+                    ):
+
+                if g_p is None or g_a is None:
+                    continue
+
+                correction = (
+                    -coefficient * g_p
+                )
+
+                if corrections[i] is None:
+                    corrections[i] = (
+                        correction.clone()
+                    )
+                else:
+                    corrections[i].add_(
+                        correction
+                    )
+
+    return corrections, stats
