@@ -243,7 +243,7 @@ def generate_config(
         "mlp_arc_hidden": 500 if train_arc else None,
 
         "mlp_lab_hidden": (
-            200 if train_deprel or train_subtypes else None
+            100 if train_deprel or train_subtypes else None
             # previously 100
         ),
         "mlp_dropout": 0.2,
@@ -1014,6 +1014,10 @@ def train_command(args: settings.Settings):
             num_batches_per_epoch=train_set_size,
             num_epochs=args.tagging.epochs,
             grad_acc=args.tagging.grad_acc,
+            encoder_lr=args.tagging.encoder_lr,
+            head_lr=args.tagging.head_lr,
+            weight_decay=args.tagging.weight_decay,
+            warmup_epochs=args.tagging.warmup_epochs,
             # args.tagging.encoder_lr, args.tagging.head_lr
         )
     )
