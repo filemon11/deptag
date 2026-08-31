@@ -1223,6 +1223,7 @@ def train_command(args: settings.Settings):
                     auxiliary_loss_names = set(
                         losses.keys()) - primary_loss_names
 
+                    num_active_losses = len(primary_loss_names)
                     loss: torch.Tensor = torch.zeros(
                         (1,), device="cpu" if device == torch.device("cpu")
                         else "cuda")
@@ -1245,8 +1246,14 @@ def train_command(args: settings.Settings):
                                 aux_loss = torch.stack(
                                     list(aux_loss.values())).mean()
                             loss = loss + aux_loss * loss_weights[name]
+                            num_active_losses += 1
+
                             pcgrad_aux_losses[name] = (
                                 aux_loss, loss_weights[name])
+
+                    global_loss_scale = 1.0 / num_active_losses
+
+                    loss = loss * global_loss_scale
 
                     pcgrad_corrections = None
                     pcgrad_stats = {}
@@ -1261,7 +1268,7 @@ def train_command(args: settings.Settings):
                             shared_params=pcgrad_params,
                             scaler=scaler,
                             grad_acc=args.tagging.grad_acc,
-                            global_loss_scale=1.0,
+                            global_loss_scale=global_loss_scale,
                         )
 
                 if args.tagging.use_tensorboard:
