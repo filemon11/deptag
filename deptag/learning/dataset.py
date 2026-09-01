@@ -358,7 +358,7 @@ class TaggingDataset(torch.utils.data.Dataset):
         return input_ids, word_end_positions
 
     def __len__(self):
-        return int(len(self.trees) /24)  # TODO
+        return int(len(self.trees))  # /24)  # TODO
 
     def __getitem__(self, index: int):
         sent = self.trees[index]
