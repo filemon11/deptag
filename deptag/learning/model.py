@@ -36,7 +36,6 @@ class TaskSpecificParams(TypedDict):
     train_xpos: bool
     mlp_arc_hidden: int
     mlp_lab_hidden: int
-    mlp_drop: float
     mlp_num_labels: int
     deprel_num: int
     sup_deprel_num: int
@@ -55,7 +54,8 @@ class TaskSpecificParams(TypedDict):
     subtypes_label_smoothing: float
     proj_drop: float
     mix_drop: float
-    biaffine_drop: float
+    arc_drop: float
+    deprel_drop: float
 
 
 class AutoConfig(transformers.AutoConfig):
@@ -199,7 +199,7 @@ class ModelForTagging(nn.Module):
                     config.task_specific_params["deprel_num"],
                     self.max_l, self.max_r,
                     config.task_specific_params["mix_drop"],
-                    config.task_specific_params["biaffine_drop"],
+                    config.task_specific_params["proj_drop"],
                 )
             else:
                 self.sup_mix_proj = get_mix_proj(self.num_sup_tags)
@@ -217,7 +217,8 @@ class ModelForTagging(nn.Module):
             config.task_specific_params["train_subtypes"],
             config.task_specific_params["extra_num_labels"],
             config.task_specific_params["mix_drop"],
-            config.task_specific_params["mlp_drop"],
+            config.task_specific_params["arc_drop"],
+            config.task_specific_params["deprel_drop"],
         )
 
         # Label smoothing

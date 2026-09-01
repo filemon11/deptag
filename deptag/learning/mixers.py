@@ -287,7 +287,8 @@ class MixedBiaffine(nn.Module):
             train_feats: bool = False,
             extra_feats_num: Mapping[str, int] = {},
             mix_drop: float = 0.0,
-            proj_drop: float = 0.0,
+            arc_drop: float = 0.0,
+            lab_drop: float = 0.0,
             /, one_extra_layer: bool = True) -> None:
         super().__init__()
         self.arc_mix = None
@@ -314,7 +315,8 @@ class MixedBiaffine(nn.Module):
             input_dim,
             arc_hidden,
             label_hidden if train_label else None,
-            proj_drop,
+            arc_drop,
+            lab_drop,
             label_num if train_label else None,
             extra_feats_num if train_feats else None,
             single=False,

@@ -74,7 +74,9 @@ class BiAffineParser(nn.Module):
     def __init__(
             self,
             mlp_input: int, mlp_arc_hidden: int | None,
-            mlp_lab_hidden: int | None, mlp_dropout: float,
+            mlp_lab_hidden: int | None,
+            arc_dropout: float,
+            lab_dropout: float,
             num_labels: int | None,
             extra_num_labels: Mapping[str, int] | None = None,
             single: bool = False,):
@@ -86,17 +88,17 @@ class BiAffineParser(nn.Module):
         self.arc_mlp_d = None
         if mlp_arc_hidden is not None:
             self.arc_mlp_h = MLP(
-                mlp_input, mlp_arc_hidden, 2, 'ReLU', mlp_dropout)
+                mlp_input, mlp_arc_hidden, 2, 'ReLU', arc_dropout)
             self.arc_mlp_d = MLP(
-                mlp_input, mlp_arc_hidden, 2, 'ReLU', mlp_dropout)
+                mlp_input, mlp_arc_hidden, 2, 'ReLU', arc_dropout)
         # Label MLPs
         self.lab_mlp_h = None
         self.lab_mlp_d = None
         if mlp_lab_hidden is not None:
             self.lab_mlp_h = MLP(
-                mlp_input, mlp_lab_hidden, 2, 'ReLU', mlp_dropout)
+                mlp_input, mlp_lab_hidden, 2, 'ReLU', lab_dropout)
             self.lab_mlp_d = MLP(
-                mlp_input, mlp_lab_hidden, 2, 'ReLU', mlp_dropout)
+                mlp_input, mlp_lab_hidden, 2, 'ReLU', lab_dropout)
 
         # BiAffine layers
         self.arc_biaffine = None
@@ -308,7 +310,8 @@ def make_model(
         mlp_input: int,
         mlp_arc_hidden: int,
         mlp_lab_hidden: int | None,
-        mlp_dropout: float,
+        arc_dropout: float,
+        lab_dropout: float,
         num_labels: int | None,
         extra_num_labels: Mapping[str, int] | None,
         single: bool = False) -> BiAffineParser:
@@ -319,7 +322,8 @@ def make_model(
         mlp_input,
         mlp_arc_hidden,
         mlp_lab_hidden,
-        mlp_dropout,
+        arc_dropout,
+        lab_dropout,
         num_labels,
         extra_num_labels=extra_num_labels,
         single=single,
