@@ -76,7 +76,7 @@ class BiAffineParser(nn.Module):
             mlp_input: int, mlp_arc_hidden: int | None,
             mlp_lab_hidden: int | None, mlp_dropout: float,
             num_labels: int | None,
-            extra_num_labels: dict[str, int] | None = None,
+            extra_num_labels: Mapping[str, int] | None = None,
             single: bool = False,):
         super(BiAffineParser, self).__init__()
         self.single = single
