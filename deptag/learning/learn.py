@@ -223,8 +223,8 @@ def generate_config(
         "num_xpos_tags": num_xpos_tags,
         "extra_num_labels": extra_num_labels,
         "train_subtypes": train_subtypes,
-        "dropout": 0.1,
         "proj_drop": 0.1,
+        "biaffine_drop": 0.1,
         "mix_drop": 0.1,
         "use_pos": False,
 
@@ -246,7 +246,7 @@ def generate_config(
         "mlp_arc_hidden": 500 if train_arc else None,
 
         "mlp_lab_hidden": (
-            100 if train_deprel or train_subtypes else None
+            200 if train_deprel or train_subtypes else None
         ),
         "mlp_drop": 0.2,
         "mlp_num_labels": (

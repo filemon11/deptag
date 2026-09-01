@@ -25,7 +25,6 @@ class TaskSpecificParams(TypedDict):
     num_xpos_tags: int
     extra_num_labels: Mapping[str, int]
     train_subtypes: bool
-    dropout: float
     use_pos: bool
     n_heads: int
     transformer_layers: int
@@ -56,6 +55,7 @@ class TaskSpecificParams(TypedDict):
     subtypes_label_smoothing: float
     proj_drop: float
     mix_drop: float
+    biaffine_drop: float
 
 
 class AutoConfig(transformers.AutoConfig):
@@ -103,7 +103,6 @@ class ModelForTagging(nn.Module):
         self.train_feats: bool = config.task_specific_params['train_feats']
 
         self.pos_emb_dim: int = config.task_specific_params['pos_emb_dim']
-        self.dropout_rate: float = config.task_specific_params['dropout']
 
         self.transformer_layers = config.task_specific_params[
             "transformer_layers"]
@@ -200,7 +199,7 @@ class ModelForTagging(nn.Module):
                     config.task_specific_params["deprel_num"],
                     self.max_l, self.max_r,
                     config.task_specific_params["mix_drop"],
-                    config.task_specific_params["proj_drop"],
+                    config.task_specific_params["biaffine_drop"],
                 )
             else:
                 self.sup_mix_proj = get_mix_proj(self.num_sup_tags)
