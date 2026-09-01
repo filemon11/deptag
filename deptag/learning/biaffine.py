@@ -3,6 +3,9 @@ from torch import nn
 from numpy import prod
 import torch.nn.functional as F
 
+from typing import Mapping
+
+
 # Source:
 # https://github.com/daandouwe/biaffine-dependency-parser/blob/master/model.py
 # changes made
@@ -307,7 +310,7 @@ def make_model(
         mlp_lab_hidden: int | None,
         mlp_dropout: float,
         num_labels: int | None,
-        extra_num_labels: dict[str, int] | None,
+        extra_num_labels: Mapping[str, int] | None,
         single: bool = False) -> BiAffineParser:
     """Initiliaze a the BiAffine parser according to the specs in args."""
 

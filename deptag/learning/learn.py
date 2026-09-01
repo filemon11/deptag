@@ -19,7 +19,7 @@ from .. import extraction, data, settings, parsing, utils
 import dataclasses
 from collections import defaultdict
 
-from typing import Mapping, Sequence, Self, Type, Literal
+from typing import Mapping, Sequence, Self, Type, Literal, TypedDict
 
 # torch.backends.cuda.enable_flash_sdp(False)
 # torch.backends.cuda.enable_mem_efficient_sdp(False)
@@ -192,7 +192,7 @@ def generate_config(
         subtypes_label_smoothing: float = 0.0,
         ) -> transformers.PretrainedConfig:
 
-    config = transformers.AutoConfig.from_pretrained(
+    config = model.AutoConfig.from_pretrained(
         model_path,
         num_labels=len(tag_system),
     )
@@ -224,6 +224,8 @@ def generate_config(
         "extra_num_labels": extra_num_labels,
         "train_subtypes": train_subtypes,
         "dropout": 0.1,
+        "proj_drop": 0.1,
+        "mix_drop": 0.1,
         "use_pos": False,
 
         "n_heads": config.num_attention_heads,
@@ -237,6 +239,7 @@ def generate_config(
         # round(2 * num_encoder_layers / 3),
         "parse_layer": num_encoder_layers,
 
+        "train_arc": True,
         "train_pos": train_pos,
         "train_xpos": train_xpos,
 
@@ -244,9 +247,8 @@ def generate_config(
 
         "mlp_lab_hidden": (
             100 if train_deprel or train_subtypes else None
-            # previously 100
         ),
-        "mlp_dropout": 0.2,
+        "mlp_drop": 0.2,
         "mlp_num_labels": (
             num_deprel_tags
             if train_deprel
@@ -315,7 +317,7 @@ def initialize_model(
         feats_label_smoothing=feats_label_smoothing,
         subtypes_label_smoothing=subtypes_label_smoothing,
     )
-    tagging_model = model.ModelForTagging(config=config)
+    tagging_model = model.ModelForTagging(config=config)  # type: ignore
     tagging_model.compile()
     return tagging_model
 
@@ -972,7 +974,7 @@ def train_command(args: settings.Settings):
         i: deprel for deprel, i in train_dataset.deprel_dict.items()}
 
     logging.info("Initializing the model")
-    model = initialize_model(
+    tagging_model = initialize_model(
         args.tagging.model_name, sup2id, args.tagging.model_path,
         train_pos=args.tagging.train_pos,
         train_xpos=args.tagging.train_xpos,
@@ -999,8 +1001,8 @@ def train_command(args: settings.Settings):
         feats_label_smoothing=args.tagging.feats_label_smoothing,
         subtypes_label_smoothing=args.tagging.subtypes_label_smoothing,
     )
-    assert model is not None
-    model.to(device)
+    assert tagging_model is not None
+    tagging_model.to(device)
 
     run_name = (
         args.file.conllu_file + "-" + args.tagging.model_name + "-"
@@ -1010,7 +1012,7 @@ def train_command(args: settings.Settings):
     train_set_size = len(train_dataloader)
     optimizer, scheduler, num_training_steps = (
         initialize_optimizer_and_scheduler(
-            model,
+            tagging_model,
             num_batches_per_epoch=train_set_size,
             num_epochs=args.tagging.epochs,
             grad_acc=args.tagging.grad_acc,
@@ -1024,7 +1026,7 @@ def train_command(args: settings.Settings):
 
     if args.tagging.mode != "init":
         logging.info("Loading model state dict")
-        model.load_state_dict(
+        tagging_model.load_state_dict(
             torch.load(
                 pathlib.Path(
                     args.tagging.output_path) / (run_name + "_last")))
@@ -1049,7 +1051,7 @@ def train_command(args: settings.Settings):
     optimizer.zero_grad()
 
     logging.info("Starting The Training Loop")
-    model.train()
+    tagging_model.train()
 
     if args.tagging.mode in ("init", "add"):
         n_iter = 0
@@ -1079,7 +1081,7 @@ def train_command(args: settings.Settings):
 
     pcgrad_params = [
         p
-        for p in model.encoder.parameters()
+        for p in tagging_model.encoder.parameters()
         if p.requires_grad
     ]
 
@@ -1140,6 +1142,8 @@ def train_command(args: settings.Settings):
     t_sup: float = args.tagging.t_sup
     t_arc: float = args.tagging.t_arc
 
+    accum_count = 0
+
     for epo in tqdm.tqdm(range(epo, args.tagging.epochs)):
         # if (epo+1) % freeze_factor == 0:
         #     for name, param in model.named_parameters():
@@ -1158,9 +1162,11 @@ def train_command(args: settings.Settings):
         #     if param.requires_grad:
         #         print(f"requires gradient: {name}")
 
+        grad_acc = args.tagging.grad_acc
+
         logging.info(f"*******************EPOCH {epo}*******************")
         t = 1
-        model.train()
+        tagging_model.train()
 
         with tqdm.tqdm(train_dataloader, disable=False) as progbar:
             for i, batch in enumerate(progbar):
@@ -1184,49 +1190,47 @@ def train_command(args: settings.Settings):
                     # A* factorised structural from A* las: arc + factorised + deprel
                     # A* factorised structural from A* uas: arc + factorised
 
-                    outputs = model(**batch)
+                    logits: model.TaggingLogits
+                    word_mask: torch.Tensor
+                    logits, word_mask = tagging_model(**batch)
 
-                    sup_loss = outputs[0]
-                    pos_loss = outputs[2]
-                    arc_loss = outputs[4]
-                    deprel_loss = outputs[6]
-                    factorised_losses = outputs[8]
-                    xpos_loss = outputs[10]
-                    feats_losses = outputs[12]
-                    subtypes_losses = outputs[14]
-                    losses = {
-                        "sup_loss": outputs[0],
-                        "pos_loss": outputs[2],
-                        "arc_loss": outputs[4],
-                        "deprel_loss": outputs[6],
-                        "xpos_loss": outputs[10],
-                        "feats_losses": outputs[12],
-                        "subtypes_losses": outputs[14],
-                    }
+                    losses: model.TaggingLosses
+                    losses = tagging_model.calc_losses(
+                        logits, word_mask, **batch
+                    )
+
+                    sup_loss = losses["sup"]
+                    pos_loss = losses["pos"]
+                    arc_loss = losses["arc"]
+                    deprel_loss = losses["deprel"]
+                    factorised_losses = losses["factorised"]
+                    xpos_loss = losses["xpos"]
+                    feats_losses = losses["feats"]
+                    subtypes_losses = losses["subtypes"]
 
                     if factorised_losses is not None and len(
                             factorised_losses) > 0:
                         sup_loss = torch.stack(
                             list(factorised_losses.values())).mean()
-                        losses["sup_loss"] = sup_loss
+                        losses["sup"] = sup_loss
 
-                    primary_loss_names = {"arc_loss"}
+                    primary_loss_names = {"arc"}
                     if "a*" in args.tagging.eval_metric:
-                        primary_loss_names.add("sup_loss")
+                        primary_loss_names.add("sup")
 
                     if (
                             args.tagging.eval_metric == "mst-las"
                             or (
                                 not args.tagging.deprels_from_supertags
                                 and "uas" not in args.tagging.eval_metric)):
-                        primary_loss_names.add("deprel_loss")
+                        primary_loss_names.add("deprel")
 
                     if (
                             args.deprels.merged is not None
                             and len(args.deprels.merged) > 0
                             and "a*" in args.tagging.eval_metric
                             and args.tagging.deprels_from_supertags):
-                        primary_loss_names.add("pos_loss")
+                        primary_loss_names.add("pos")
 
                     auxiliary_loss_names = set(
                         losses.keys()) - primary_loss_names
@@ -1238,13 +1242,13 @@ def train_command(args: settings.Settings):
 
                     primary_loss = torch.stack(
                         [
-                            losses[name]*loss_weights[name]
+                            losses[name]*loss_weights[name]  # type: ignore
                             for name in primary_loss_names]).sum()
                     loss = primary_loss
 
                     pcgrad_aux_losses = {}
                     for name in auxiliary_loss_names:
-                        aux_loss = losses[name]
+                        aux_loss = losses[name]  # type: ignore
 
                         if aux_loss is not None:
                             if isinstance(aux_loss, dict):
@@ -1270,15 +1274,17 @@ def train_command(args: settings.Settings):
                             aux_losses=pcgrad_aux_losses,
                             shared_params=pcgrad_params,
                             scaler=scaler,
-                            grad_acc=args.tagging.grad_acc,
+                            grad_acc=grad_acc,
                             global_loss_scale=global_loss_scale,
                         )
 
-                scaler.scale(loss / args.tagging.grad_acc).backward()
+                scaler.scale(loss / grad_acc).backward()
 
-                if (i + 1) % args.tagging.grad_acc == 0:
+                accum_count += 1
+
+                if accum_count == args.tagging.grad_acc:
                     pcgrad_corrections = None
-                    pcgrad_stats = {}
+                    pcgrad_stats = {}  # type: ignore
 
                     (
                         pcgrad_corrections,
@@ -1290,7 +1296,10 @@ def train_command(args: settings.Settings):
 
                     if args.tagging.use_tensorboard:
                         for name, stats in pcgrad_stats.items():
-                            if stats["cosine"] is None:
+                            if (
+                                    stats["cosine"] is None
+                                    or stats["norm_ratio"] is None
+                                    or stats["coefficient"] is None):
                                 continue
 
                             writer.add_scalar(
@@ -1310,6 +1319,13 @@ def train_command(args: settings.Settings):
                                 stats["coefficient"].item(),
                                 n_iter,
                             )
+
+                            if stats["projected_norm_ratio"] is not None:
+                                writer.add_scalar(
+                                    f"GradNorm/{name}_projected_to_Parse",
+                                    stats["projected_norm_ratio"].item(),
+                                    n_iter,
+                                )
 
                     with torch.no_grad():
                         for p, correction in zip(
@@ -1359,8 +1375,24 @@ def train_command(args: settings.Settings):
                     progbar.set_postfix(loss=loss.item())
 
                     scaler.unscale_(optimizer)
+                    total_norm = torch.nn.utils.clip_grad_norm_(
+                        tagging_model.parameters(), 1.0)
 
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    writer.add_scalar(
+                        "GradNorm/TotalBeforeClip",
+                        total_norm.item(),
+                        n_iter,
+                    )
+                    clip_factor = min(
+                        1.0,
+                        1.0 / (total_norm.item() + 1e-6),
+                    )
+                    writer.add_scalar(
+                        "GradNorm/ClipFactor",
+                        clip_factor,
+                        n_iter,
+                    )
+
                     # debug_optimizer_devices(model, optimizer)
                     scaler.step(optimizer)
                     scheduler.step()
@@ -1373,6 +1405,7 @@ def train_command(args: settings.Settings):
 
                     n_iter += 1
                     t += 1
+                    accum_count = 0
 
                     for j, group in enumerate(optimizer.param_groups):
                         writer.add_scalar(
@@ -1399,7 +1432,7 @@ def train_command(args: settings.Settings):
                 dev_feats_losses,
                 dev_subtypes_losses,) = (
                 evaluate.predict(
-                    model, dev_dataloader, len(dev_dataset),
+                    tagging_model, dev_dataloader, len(dev_dataset),
                     len(sup2id), args.tagging.batch_size, device,
                     report_loss=True,
                     deprels_matrix=True)
@@ -1602,7 +1635,7 @@ def train_command(args: settings.Settings):
             logging.info("tol {}".format(tol))
 
             _save_model(
-                model, pathlib.Path(
+                tagging_model, pathlib.Path(
                     args.tagging.output_path), run_name + "_last")
             _save_optimiser(
                 optimizer, pathlib.Path(
@@ -1643,14 +1676,14 @@ def train_command(args: settings.Settings):
                 best_metric = eval_metric
                 logging.info("Saving The Newly Found Best Model")
                 _save_model(
-                    model, pathlib.Path(
+                    tagging_model, pathlib.Path(
                         args.tagging.output_path), run_name)
             else:
                 tol -= 1
 
             if tol < 0:
                 _finish_training(
-                    model, sup2id, dev_dataloader,
+                    tagging_model, sup2id, dev_dataloader,
                     dev_dataset, run_name, writer, args.tagging,
                     n_iter, args.tagging.factorised, seen_factors,
                     t_sup=t_sup)
@@ -1666,7 +1699,7 @@ def train_command(args: settings.Settings):
             pass
 
     _finish_training(
-        model, sup2id, dev_dataloader, dev_dataset,
+        tagging_model, sup2id, dev_dataloader, dev_dataset,
         run_name, writer, args.tagging, n_iter,
         args.tagging.factorised, seen_factors,
         t_sup=t_sup)

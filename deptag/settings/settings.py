@@ -11,12 +11,20 @@ SETTINGS_DIR = pathlib.Path("settings/")
 DEFAULT_SETTINGS = "default"
 "Directory where settings are located"
 
+Factorised = Literal[
+    'structural', 'complete',
+    'seen', False]
+Mode = Literal["init", "continue", "add"]
+EvalMetric = Literal[
+    "cacc", "mst-las", "mst-uas", "a*-las", "a*-uas"]
+Split = Literal["train", "test", "dev"]
+
 
 @dataclasses.dataclass(frozen=True)
 class FileSettings:
     conllu_file: str
     output_file: str
-    split: None | Literal["train", "test", "dev"] = None
+    split: None | Split = None
     standard: str = "default"
     standards_dir: str = str(standards.STANDARDS_DIR)
     standard_from_xml: bool = False
@@ -65,11 +73,9 @@ class TaggingSettings:
     train_sup: bool = True
     train_feats: bool = False
     train_subtypes: bool = False
-    mode: Literal["init", "continue", "add"] = "init"
-    eval_metric: Literal[
-        "cacc", "mst-las", "mst-uas", "a*-las", "a*-uas"] = "cacc"
-    factorised: Literal[
-        "structural", "complete", "seen", False] = False
+    mode: Mode = "init"
+    eval_metric: EvalMetric = "cacc"
+    factorised: Factorised = False
     deprels_from_supertags: bool = False
     k_supertag: int = 5
     k_head_scores: int = 5

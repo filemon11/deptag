@@ -557,8 +557,34 @@ def compute_corrections(
                 "coefficient": None,
                 "aux_norm": None,
                 "norm_ratio": None,
+                "projected_aux_norm": None,
+                "projected_norm_ratio": None,
             }
             continue
+
+        # Norm after PCGrad projection.
+        if coefficient < 0:
+            projected_aux_norm_sq = (
+                aux_norm_sq
+                - dot.square()
+                / (primary_norm_sq + eps)
+            )
+
+            projected_aux_norm_sq = torch.clamp(
+                projected_aux_norm_sq,
+                min=0.0,
+            )
+        else:
+            projected_aux_norm_sq = aux_norm_sq
+
+        projected_aux_norm = (
+            projected_aux_norm_sq.sqrt()
+        )
+
+        projected_norm_ratio = (
+            projected_aux_norm
+            / (primary_norm + eps)
+        )
 
         stats[name] = {
             "cosine": cosine,
@@ -568,6 +594,8 @@ def compute_corrections(
                 aux_norm
                 / (primary_norm + eps)
             ),
+            "projected_aux_norm": projected_aux_norm,
+            "projected_norm_ratio": projected_norm_ratio,
         }
 
         # No conflict -> no correction.

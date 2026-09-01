@@ -3,6 +3,8 @@ import torch
 import logging
 import tqdm
 
+from . import model
+
 from collections import defaultdict
 
 from typing import overload, Literal, DefaultDict, Sequence
@@ -143,7 +145,8 @@ def pad_deprel_gold(
 
 @overload
 def predict(
-        model, eval_dataloader, dataset_size, num_tags, batch_size, device,
+        tagging_model: model.ModelForTagging, eval_dataloader, dataset_size,
+        num_tags, batch_size, device,
         report_loss: Literal[True], deprels_from_pred_head: bool = False,
         deprels_matrix: bool = False
         ) -> tuple[
@@ -167,7 +170,8 @@ def predict(
 
 @overload
 def predict(
-        model, eval_dataloader, dataset_size, num_tags, batch_size, device,
+        tagging_model: model.ModelForTagging, eval_dataloader, dataset_size,
+        num_tags, batch_size, device,
         report_loss: Literal[False] = False,
         deprels_from_pred_head: bool = False, deprels_matrix: bool = False
         ) -> tuple[
@@ -190,7 +194,8 @@ def predict(
 
 
 def predict(
-        model, eval_dataloader, dataset_size, num_tags, batch_size, device,
+        tagging_model: model.ModelForTagging, eval_dataloader,
+        dataset_size, num_tags, batch_size, device,
         report_loss: bool = False, deprels_from_pred_head: bool = False,
         deprels_matrix: bool = False
         ) -> tuple[
@@ -210,7 +215,7 @@ def predict(
             dict[str, np.ndarray],
             dict[str, np.ndarray]]:
 
-    model.eval()
+    tagging_model.eval()
     predictions = []
     eval_labels = []
     max_len = 0
@@ -253,20 +258,26 @@ def predict(
                 "cpu" if device == torch.device("cpu") else "cuda",
                 enabled=True, dtype=torch.float16
                 ):
-            outputs = model(
-                **batch, report_loss=report_loss,
-                printinfo=False)
+
+            logits: model.TaggingLogits
+            word_mask: torch.Tensor
+            logits, word_mask = tagging_model(**batch)
+
+            losses: model.TaggingLosses
+            losses = tagging_model.calc_losses(
+                logits, word_mask, **batch
+            )
 
         idx += 1
-        if outputs[1] is not None:
-            logits = outputs[1].float().cpu().numpy()
-            max_len = max(max_len, logits.shape[1])
-            predictions.append(logits)
+        if logits["sup"] is not None:
+            sup_logits = logits["sup"].float().cpu().numpy()
+            max_len = max(max_len, sup_logits.shape[1])
+            predictions.append(sup_logits)
         labels = batch['labels'].int().cpu().numpy()
         eval_labels.append(labels)
 
-        if outputs[3] is not None:
-            pos_logits = outputs[3].float().cpu().numpy()
+        if logits["pos"] is not None:
+            pos_logits = logits["pos"].float().cpu().numpy()
             pos_predictions.append(pos_logits)
             max_len = max(max_len, pos_logits.shape[1])
         pos_labels = batch['pos_ids'].int().cpu().numpy()
@@ -275,7 +286,7 @@ def predict(
         pred_heads = None
         parse_mask = None
 
-        if outputs[5] is not None:
+        if logits["S_arc"] is not None:
             # batch["heads"]: [B, W]
             # True for actual words, False for padding.
             word_mask = batch["heads"].ne(-1)
@@ -295,7 +306,7 @@ def predict(
             # [B, W + 1]
 
             # outputs[5]: [B, H, D]
-            arc_logits = outputs[5].masked_fill(
+            arc_logits = logits["S_arc"].masked_fill(
                 ~parse_mask.unsqueeze(-1),
                 float("-inf"),
             )
@@ -352,7 +363,7 @@ def predict(
         s_preds, s_labels = deprel_func(
             deprels_from_pred_head,
             deprels_matrix,
-            outputs[7],
+            logits["S_lab"],
             batch["deprel_ids"],
             pred_heads,
             batch["heads"]
@@ -364,28 +375,28 @@ def predict(
         # deprel_labels = batch['deprel_ids'].int().cpu().numpy()
         # eval_deprel_labels.append(deprel_labels)
 
-        for f_name, f_logits in outputs[9].items():
-            f_logits = f_logits.float().cpu().numpy()
-            factorised_predictions[f_name].append(f_logits)
-            max_len = max(max_len, f_logits.shape[1])
+        for f_name, f_logits in logits["factorised"].items():
+            f_logits_ = f_logits.float().cpu().numpy()
+            factorised_predictions[f_name].append(f_logits_)
+            max_len = max(max_len, f_logits_.shape[1])
             f_labels = batch[f_name].int().cpu().numpy()
             eval_factorised_labels[f_name].append(f_labels)
 
-        if outputs[11] is not None:
-            xpos_logits = outputs[11].float().cpu().numpy()
+        if logits["xpos"] is not None:
+            xpos_logits = logits["xpos"].float().cpu().numpy()
             xpos_predictions.append(xpos_logits)
             max_len = max(max_len, xpos_logits.shape[1])
         xpos_labels = batch['xpos_ids'].int().cpu().numpy()
         eval_xpos_labels.append(xpos_labels)
 
-        for f_name, f_logits in outputs[13].items():
-            f_logits = f_logits.float().cpu().numpy()
-            feats_predictions[f_name].append(f_logits)
-            max_len = max(max_len, f_logits.shape[1])
+        for f_name, f_logits in logits["feats"].items():
+            f_logits_ = f_logits.float().cpu().numpy()
+            feats_predictions[f_name].append(f_logits_)
+            max_len = max(max_len, f_logits_.shape[1])
             f_labels = batch[f_name].int().cpu().numpy()
             eval_feats_labels[f_name].append(f_labels)
 
-        for f_name, f_logits in outputs[15].items():
+        for f_name, f_logits in logits["S_extra_lab"].items():
 
             s_preds, s_labels = deprel_func(
                 deprels_from_pred_head,
@@ -400,36 +411,36 @@ def predict(
             eval_subtypes_labels[f_name].append(s_labels)
 
         # losses
-        if outputs[0] is not None:
+        if losses["sup"] is not None:
             assert isinstance(sup_losses, list)
-            sup_losses.append(outputs[0].cpu().numpy())
+            sup_losses.append(losses["sup"].cpu().numpy())
 
-        if outputs[2] is not None:
+        if losses["pos"] is not None:
             assert isinstance(pos_losses, list)
-            pos_losses.append(outputs[2].cpu().numpy())
+            pos_losses.append(losses["pos"].cpu().numpy())
 
-        if outputs[4] is not None:
+        if losses["arc"] is not None:
             assert isinstance(arc_losses, list)
-            arc_losses.append(outputs[4].cpu().numpy())
+            arc_losses.append(losses["arc"].cpu().numpy())
 
-        if outputs[6] is not None:
+        if losses["deprel"] is not None:
             assert isinstance(deprel_losses, list)
-            deprel_losses.append(outputs[6].cpu().numpy())
+            deprel_losses.append(losses["deprel"].cpu().numpy())
 
-        if outputs[8] is not None:
-            for f_name, f_loss in outputs[8].items():
+        if losses["factorised"] is not None:
+            for f_name, f_loss in losses["factorised"].items():
                 factorised_losses[f_name].append(f_loss.cpu().numpy())
 
-        if outputs[10] is not None:
+        if losses["xpos"] is not None:
             assert isinstance(xpos_losses, list)
-            xpos_losses.append(outputs[10].cpu().numpy())
+            xpos_losses.append(losses["xpos"].cpu().numpy())
 
-        if outputs[12] is not None:
-            for f_name, f_loss in outputs[12].items():
+        if losses["feats"] is not None:
+            for f_name, f_loss in losses["feats"].items():
                 feats_losses[f_name].append(f_loss.cpu().numpy())
 
-        if outputs[14] is not None:
-            for f_name, f_loss in outputs[14].items():
+        if losses["subtypes"] is not None:
+            for f_name, f_loss in losses["subtypes"].items():
                 subtypes_losses[f_name].append(f_loss.cpu().numpy())
 
     if len(predictions) > 0:
@@ -606,7 +617,7 @@ def predict(
         losses += subtypes_losses_[f_name]
         num_losses += 1
 
-    model.train()
+    tagging_model.train()
     return (
         predictions_, eval_labels_,
         pos_predictions_, eval_pos_labels_,
