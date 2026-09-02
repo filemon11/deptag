@@ -2119,7 +2119,7 @@ def evaluate_command(args: settings.Settings, k: int = 1):
         k_head_scores=args.tagging.k_head_scores,
         t_arc=t_arc,
         t_sup=t_sup,
-        sup_score_scale= args.tagging.sup_score_scale,
+        sup_score_scale=args.tagging.sup_score_scale,
     )
 
     print(
