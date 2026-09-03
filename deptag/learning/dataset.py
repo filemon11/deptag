@@ -99,12 +99,17 @@ def ptb_unescape(sent: Iterable[str]) -> list[str]:
 
 class TaggingDataset(torch.utils.data.Dataset):
     def __init__(
-            self, split, tokenizer, tag_system: Mapping[str, int],
+            self, 
+            split,
+            tokenizer,
+            tag_system: Mapping[str, int],
             data: Sequence[Sequence[extraction.Token]],
             device,
             dataset: str,
             max_train_len=350,
-            factorised_max_left_right: None | tuple[int, int] = None):
+            factorised_max_left_right: None | tuple[int, int] = None,
+            fraction: float = 1.0):
+        self.fraction = fraction
         self.split = split
         self.trees = data
         self.tokenizer: transformers.PreTrainedTokenizerBase = tokenizer
@@ -113,7 +118,21 @@ class TaggingDataset(torch.utils.data.Dataset):
                 "TaggingDataset requires a fast tokenizer for word alignment."
             )
         self.dataset = dataset
-        self.tag_system = tag_system
+        self.tag_system = dict(tag_system)
+        self.id2sup = {i: sup for sup, i in tag_system.items()}
+        self.id2sup_relative = {
+            i: extraction.convert_string_to_relative_relation(sup)
+            for i, sup in self.id2sup.items()}
+        self.id2relative_sup = {
+            i: extraction.process_relative_tag_to_projective(
+                extraction.convert_string_to_relative_relation(sup))
+            for i, sup in self.id2sup.items()}
+        self.lr_args = [
+            extraction.get_lr_argnum(tag)
+            for tag in self.id2relative_sup.values() if tag is not None]
+        self.max_l = max([lr[0] for lr in self.lr_args])
+        self.max_r = max([lr[1] for lr in self.lr_args])
+
         self.pad_token_id = self.tokenizer.pad_token_id
         self.device = device
 
@@ -201,6 +220,15 @@ class TaggingDataset(torch.utils.data.Dataset):
                     self.feats_dicts[name] = UnkLexicon.unk_load(
                         mapping
                     )
+
+        self.id2pos = {
+            i: pos for pos, i in self.pos_dict.items()}
+        self.id2deprel = {
+            i: deprel for deprel, i in self.deprel_dict.items()}
+
+    @property
+    def sup2id(self) -> dict[str, int]:
+        return self.tag_system
 
     @staticmethod
     def _get_dict(
@@ -358,10 +386,10 @@ class TaggingDataset(torch.utils.data.Dataset):
         return input_ids, word_end_positions
 
     def __len__(self):
-        return int(len(self.trees))  # /24)  # TODO
+        return int(len(self.trees) * self.fraction)  # /24)  # TODO
 
     def __getitem__(self, index: int):
-        sent = self.trees[index]
+        sent = self.trees[int(index*(1/self.fraction))]
         words = ptb_unescape(w.word for w in sent)
 
         words = [w.replace("\xad", "") for w in words]

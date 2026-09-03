@@ -3,11 +3,14 @@ import torch
 import logging
 import tqdm
 
-from . import model
+from . import model, factorisation
+from .. import parsing, utils, extraction
 
 from collections import defaultdict
 
-from typing import overload, Literal, DefaultDict, Sequence
+from typing import (
+    overload, Literal, DefaultDict, Sequence, Mapping,
+)
 
 
 def deprel_func(
@@ -728,3 +731,276 @@ def calc_tag_accuracy_upto_k(
             global_step=step)
 
     return accs
+
+
+
+
+def select_deprel_logits(
+        deprel_predictions: np.ndarray,
+        heads: np.ndarray,
+        ) -> np.ndarray:
+    """Select dependency-relation logits for chosen heads.
+
+    deprel_predictions:
+        [B, D, H, L]
+
+    heads:
+        [B, D], with -1 for ROOT/padding.
+
+    Returns:
+        [B, D, L]
+    """
+    safe_heads = np.maximum(heads, 0).astype(np.intp, copy=False)
+    # [B, D]
+
+    head_indices = safe_heads[..., None, None]
+    # [B, D, 1, 1]
+
+    # Explicitly broadcast across the label dimension.
+    head_indices = np.broadcast_to(
+        head_indices,
+        (
+            *safe_heads.shape,
+            1,
+            deprel_predictions.shape[-1],
+        ),
+    )
+    # [B, D, 1, L]
+
+    selected = np.take_along_axis(
+        deprel_predictions,
+        head_indices,
+        axis=2,
+    )
+    # [B, D, 1, L]
+
+    return selected.squeeze(2)
+    # [B, D, L]
+
+
+def get_eval_metric(
+        eval_metric_type: Literal[
+            "cacc", "a*-las", "a*-uas", "mst-las", "mst-uas"],
+        factorised: Literal["complete", "structural", "seen", False],
+        deprels_from_supertags: bool,
+        combined_acc: float,
+        sup_predictions: np.ndarray | None,
+        arc_predictions: np.ndarray | None,
+        pos_predictions: np.ndarray | None,
+        deprel_predictions: np.ndarray | None,
+        factorised_predictions: Mapping[str, np.ndarray],
+        seen_supertag_logps: np.ndarray | None,
+        eval_sup_labels: np.ndarray,
+        eval_arc_labels: np.ndarray | None,
+        eval_deprel_labels: np.ndarray | None,
+        id2pos: Mapping[int, str],
+        id2deprel: Mapping[int, str],
+        deprel2id: Mapping[str, int],
+        id2sup: Mapping[int, str],
+        sup2id: Mapping[str, int],
+        id2sup_relative: Mapping[int, extraction.RelativeTag],
+        valid_id2sup: Mapping[int, str] | None,
+        valid_id2sup_relative: Mapping[int, extraction.RelativeTag] | None,
+        valid_factors: None | factorisation.SupertagFactors,
+        max_l: int,
+        max_r: int,
+        k_supertag: int,
+        k_head_scores: int,
+        t_sup: float = 1,
+        t_arc: float = 1,
+        sup_score_scale: float = 1.0,
+        ) -> float:
+    eval_metric: float
+    match eval_metric_type:
+        case "cacc":
+            eval_metric = combined_acc
+
+        case "a*-las" | "a*-uas":
+            root_supertag = "*+root"
+
+            assert arc_predictions is not None
+            assert eval_arc_labels is not None
+            # assert pos_predictions is not None
+
+            chart_id2sup: Mapping[int, str]
+            chart_id2sup_relative: Mapping[int, extraction.RelativeTag]
+            if factorised == "complete":
+                argument_logps = {
+                    f_name: -utils.neg_log10_softmax(f_pred / t_sup)
+                    for f_name, f_pred in
+                    factorised_predictions.items() if
+                    f_name.startswith("left") or
+                    f_name.startswith("right")
+                }
+                candidates = factorisation.top_k_valid_supertags_batch(
+                    argument_logps,
+                    -utils.neg_log10_softmax(
+                        factorised_predictions["l_arg_nums"] / t_sup),
+                    -utils.neg_log10_softmax(
+                        factorised_predictions["r_arg_nums"] / t_sup),
+                    -utils.neg_log10_softmax(
+                        factorised_predictions["aux_positions"] / t_sup),
+                    -utils.neg_log10_softmax(
+                        factorised_predictions["aux_rel_ids"] / t_sup),
+                    id2deprel,
+                    max_l, max_r, k=k_supertag,
+                    projective_only=True,
+                    valid_mask=eval_sup_labels != -1,
+                )
+
+                (
+                    supertag_scores,
+                    chart_id2sup,
+                    chart_sup2id,
+                ) = factorisation.make_batch_supertag_scores(
+                    candidates,
+                    root_supertag,
+                )
+                chart_id2sup_relative = {
+                    i: extraction.convert_string_to_relative_relation(
+                        tag)
+                    for i, tag in chart_id2sup.items()}
+                root_sup_id = chart_sup2id[root_supertag]
+                chart_deprel_dict = deprel2id
+            elif factorised == "structural":
+                assert valid_factors is not None
+                supertag_scores = (
+                    -factorisation.score_structural_supertags_batch(
+                        valid_factors,
+                        -utils.neg_log10_softmax(
+                            factorised_predictions["l_arg_nums"] / t_sup),
+                        -utils.neg_log10_softmax(
+                            factorised_predictions["r_arg_nums"] / t_sup),
+                        -utils.neg_log10_softmax(
+                            factorised_predictions["aux_positions"] / t_sup),
+                    ))
+                assert valid_id2sup is not None
+                assert valid_id2sup_relative is not None
+                chart_id2sup = valid_id2sup
+                chart_id2sup_relative = valid_id2sup_relative
+                chart_sup2id = {
+                    sup: i for i, sup in chart_id2sup.items()}
+                chart_deprel_dict = {"_": 0, "dep": 0, "root": 0}
+                root_sup_id = chart_sup2id["*+_"]
+            elif factorised == "seen":
+                assert seen_supertag_logps is not None
+                supertag_scores = -seen_supertag_logps
+                # supertag_scores = utils.neg_log10_softmax(
+                #     seen_supertag_scores / t_sup)
+                chart_id2sup = id2sup
+                chart_id2sup_relative = id2sup_relative
+
+                chart_deprel_dict = deprel2id
+                root_sup_id = sup2id[root_supertag]
+            else:
+                assert sup_predictions is not None
+                supertag_scores = utils.neg_log10_softmax(
+                    sup_predictions / t_sup)
+                chart_id2sup = id2sup
+                chart_id2sup_relative = id2sup_relative
+                chart_deprel_dict = deprel2id
+                root_sup_id = sup2id[root_supertag]
+
+            # if epo > -1:
+            head_preds_astar, deprel_preds_astar = parsing.chart(
+                arc_predictions,
+                eval_arc_labels,
+                supertag_scores,
+                chart_id2sup_relative,
+                id2pos,
+                chart_deprel_dict,
+                pos_predictions.argmax(
+                    -1) if pos_predictions is not None else None,
+                max_l,
+                max_r,
+                root_sup_id=root_sup_id,
+                k_supertag=k_supertag,
+                k_head_scores=k_head_scores,
+                t_arc=t_arc,
+                sup_score_scale=sup_score_scale,
+            )
+
+            assert eval_deprel_labels is not None
+
+            if eval_metric_type == "a*-las":
+
+                if not deprels_from_supertags:
+                    assert deprel_predictions is not None
+
+                    # deprel_predictions: [B, D, H, L]
+                    # head_preds_astar:   [B, D]
+                    deprel_logits_astar = select_deprel_logits(
+                        deprel_predictions,
+                        head_preds_astar,
+                    )
+                    # [B, D, L]
+
+                    deprel_preds_astar = (
+                        deprel_logits_astar.argmax(-1)
+                    )
+                    # [B, D]
+
+                eval_metric = parsing.las(
+                    head_preds_astar,
+                    deprel_preds_astar,
+                    eval_arc_labels,
+                    eval_deprel_labels,
+                    id2deprel=id2deprel
+                )
+
+            else:  # a*-uas
+                eval_metric = parsing.uas(
+                    head_preds_astar,
+                    eval_arc_labels,
+                )
+
+            # else:
+            #     eval_metric = 0
+            #     tol = 99999
+
+        case "mst-las" | "mst-uas":
+            assert arc_predictions is not None
+            assert eval_arc_labels is not None
+
+            mst = parsing.mst(
+                arc_predictions,
+                eval_arc_labels,
+            )
+            # mst: [B, D]
+
+            if eval_metric_type == "mst-las":
+                assert deprel_predictions is not None
+                assert eval_deprel_labels is not None
+
+                # deprel_predictions: [B, D, H, L]
+                deprel_logits_mst = select_deprel_logits(
+                    deprel_predictions,
+                    mst,
+                )
+                # [B, D, L]
+
+                deprel_predictions_mst = (
+                    deprel_logits_mst.argmax(-1)
+                )
+                # [B, D]
+
+                eval_metric = parsing.las(
+                    mst,
+                    deprel_predictions_mst,
+                    eval_arc_labels,
+                    eval_deprel_labels,
+                )
+
+            else:  # mst-uas
+                eval_metric = parsing.uas(
+                    mst,
+                    eval_arc_labels,
+                )
+
+        case _:
+            raise Exception(
+                f"args.tagging.eval_metric "
+                f"'{eval_metric_type}' unknown"
+            )
+
+    return eval_metric

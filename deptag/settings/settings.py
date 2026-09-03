@@ -19,6 +19,29 @@ EvalMetric = Literal[
     "cacc", "mst-las", "mst-uas", "a*-las", "a*-uas"]
 Split = Literal["train", "test", "dev"]
 
+IntOrStr = int | str
+
+converter = ts.converters.get_default_cattrs_converter()
+
+
+def structure_int_or_str(value, _type):
+    if isinstance(value, int):
+        return value
+
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return value
+
+    raise TypeError(f"Expected int or str, got {type(value).__name__}")
+
+
+converter.register_structure_hook(
+    IntOrStr,
+    structure_int_or_str,
+)
+
 
 @dataclasses.dataclass(frozen=True)
 class FileSettings:
@@ -33,6 +56,8 @@ class FileSettings:
     save_standard_from_xml: bool = True
     ud_folder: str = str(data.UD_DIR)
     data_folder: str = str(data.DATA_DIR)
+    train_fraction: float = 1.0
+    eval_fraction: float = 1.0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -56,6 +81,7 @@ class TaggingSettings:
     # lr: float
     epochs: int
     grad_acc: int = 1
+    eval_steps: int | None = None
     warmup_epochs: int = 5
     encoder_lr: float = 0.00001
     head_lr: float = 0.0001
@@ -65,7 +91,6 @@ class TaggingSettings:
     output_path: str = "models"
     use_tensorboard: bool = True
     eval_model_name: str = ""
-    loss_ratio: float = 0.5
     train_pos: bool = True
     train_xpos: bool = False
     train_arc: bool = False
@@ -90,6 +115,54 @@ class TaggingSettings:
     subtypes_label_smoothing: float = 0.0
     sup_score_scale: float = 1.0
     loss_weights: None | dict[str, float] = None
+
+
+@dataclasses.dataclass(frozen=True)
+class TaggingRangesSettings:
+    warmup_epochs: tuple[int, int] | None = None
+    encoder_lr: tuple[float, float] | None = None
+    head_lr: tuple[float, float] | None = None
+    weight_decay: tuple[float, float] | None = None
+    train_pos: tuple[bool, ...] | None = None
+    train_xpos: tuple[bool, ...] | None = None
+    train_arc: tuple[bool, ...] | None = None
+    train_deprel: tuple[bool, ...] | None = None
+    train_sup: tuple[bool, ...] | None = None
+    train_feats: tuple[bool, ...] | None = None
+    train_subtypes: tuple[bool, ...] | None = None
+    factorised: tuple[Factorised, ...] | None = None
+    deprels_from_supertags: tuple[bool, ...] | None = None
+    k_supertag: tuple[int, int] | None = None
+    k_head_scores: tuple[int, int] | None = None
+    t_arc: tuple[float, float] | None = None
+    t_sup: tuple[float, float] | None = None
+    pos_label_smoothing: tuple[float, float] | None = None
+    xpos_label_smoothing: tuple[float, float] | None = None
+    arc_label_smoothing: tuple[float, float] | None = None
+    deprel_label_smoothing: tuple[float, float] | None = None
+    sup_label_smoothing: tuple[float, float] | None = None
+    feats_label_smoothing: tuple[float, float] | None = None
+    subtypes_label_smoothing: tuple[float, float] | None = None
+    sup_score_scale: tuple[float, float] | None = None
+    loss_weights: None | dict[
+        str, tuple[float, float]] = None
+
+
+@dataclasses.dataclass(frozen=True)
+class OptSettings:
+    ranges: TaggingRangesSettings
+    tagging: TaggingSettings
+    deprels: DepSettings
+    file: FileSettings
+    study_name: str
+    n_trials: int
+    pruner_min_resource: int = 1
+    pruner_max_resource: int | str = "auto"
+    pruner_reduction_factor: int = 3
+    pruner_bootstrap_count: int = 0
+    sampler_n_startup_trials: int = 10
+    sampler_n_ei_candidates: int = 24
+    sampler_multivariate: bool = True
 
 
 @dataclasses.dataclass(frozen=True)
@@ -120,3 +193,17 @@ def load_extract_settings(
     return ts.load(
         ExtractSettings, appname="deptag",
         config_files=[dir / f"{name}.toml"])
+
+
+def load_opt_settings(
+        name: str = DEFAULT_SETTINGS,
+        *, dir: pathlib.Path = SETTINGS_DIR
+        ) -> OptSettings:
+    return ts.load_settings(
+        OptSettings,
+        loaders=ts.default_loaders(
+            appname="opt",
+            config_files=[dir / f"{name}.toml"],
+        ),
+        converter=converter,
+    )

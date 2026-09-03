@@ -1,4 +1,5 @@
 from .manager import load_settings
 from .settings import (
     Settings, TaggingSettings, ExtractSettings,
-    Factorised, Mode, EvalMetric, Split)
+    Factorised, Mode, EvalMetric, Split, DepSettings,
+    FileSettings, OptSettings, TaggingRangesSettings,)

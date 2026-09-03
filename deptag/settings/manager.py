@@ -25,11 +25,23 @@ def load_settings(
     ...
 
 
+@overload
 def load_settings(
-        mode: Literal["extract", "full"] = "full",
+        mode: Literal["opt"],
         settings_name: str = settings.DEFAULT_SETTINGS,
         *, settings_dir: pathlib.Path = settings.SETTINGS_DIR
-        ) -> settings.Settings | settings.ExtractSettings:
+        ) -> settings.OptSettings:
+    ...
+
+
+def load_settings(
+        mode: Literal["extract", "full", "opt"] = "full",
+        settings_name: str = settings.DEFAULT_SETTINGS,
+        *, settings_dir: pathlib.Path = settings.SETTINGS_DIR
+        ) -> (
+            settings.Settings
+            | settings.ExtractSettings
+            | settings.OptSettings):
     """_summary_
 
     Args:
@@ -52,14 +64,19 @@ def load_settings(
         settings.DepSettings: _description_
     """
     # Load settings
-    sett: settings.Settings | settings.ExtractSettings
+    sett: settings.Settings | settings.ExtractSettings | settings.OptSettings
     if mode == "full":
         sett = settings.load_settings(
             settings_name,
             dir=settings_dir
         )
-    else:
+    elif mode == "extract":
         sett = settings.load_extract_settings(
+            settings_name,
+            dir=settings_dir
+        )
+    elif mode == "opt":
+        sett = settings.load_opt_settings(
             settings_name,
             dir=settings_dir
         )
@@ -91,7 +108,7 @@ def load_settings(
         sett.deprels
     )
 
-    if hasattr(sett, "tagging"):
+    if isinstance(sett, settings.Settings):
         validation.assert_tagging_settings(
             sett.tagging
         )

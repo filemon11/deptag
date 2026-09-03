@@ -41,6 +41,7 @@ evaluate = subparser.add_parser('evaluate')
 predict_parser = subparser.add_parser('predict')
 vocab = subparser.add_parser('vocab')
 extract = subparser.add_parser('extract')
+opt = subparser.add_parser('opt')
 
 evaluate.add_argument(
     '--k', default=1, type=int, help="best k to check"
@@ -229,7 +230,8 @@ if __name__ == "__main__":
 
     if args.command == 'train':
         sett = settings.load_settings("full", args.settings)
-        learning.train_command(sett)
+        for _ in learning.train_command(sett):
+            continue
     elif args.command == 'evaluate':
         sett = settings.load_settings("full", args.settings)
         learning.evaluate_command(sett, args.k)
@@ -242,5 +244,8 @@ if __name__ == "__main__":
     elif args.command == "extract":
         sett_extr = settings.load_settings("extract", args.settings)
         extract_func(sett_extr)
+    elif args.command == "opt":
+        sett_opt = settings.load_settings("opt", args.settings)
+        learning.optimise(sett_opt, RANDOM_SEED)
     else:
         raise Exception(f"Option {args.command} unknown.")
