@@ -55,6 +55,8 @@ def generate_config(
         arc_drop: float = 0.2,
         deprel_drop: float = 0.3,
         mix_drop: float = 0.1,
+        arc_hidden: int = 500,
+        deprel_hidden: int = 100,
         ) -> transformers.PretrainedConfig:
 
     config = model.AutoConfig.from_pretrained(
@@ -109,10 +111,10 @@ def generate_config(
         "train_pos": train_pos,
         "train_xpos": train_xpos,
 
-        "mlp_arc_hidden": 500 if train_arc else None,
+        "mlp_arc_hidden": arc_hidden if train_arc else None,
 
         "mlp_lab_hidden": (
-            100 if train_deprel or train_subtypes else None
+            deprel_hidden if train_deprel or train_subtypes else None
         ),
         "mlp_num_labels": (
             num_deprel_tags
@@ -165,6 +167,8 @@ def initialise_model(
         arc_drop: float = 0.2,
         deprel_drop: float = 0.3,
         mix_drop: float = 0.1,
+        arc_hidden: int = 500,
+        deprel_hidden: int = 100,
         ) -> model.ModelForTagging | None:
     config = generate_config(
         model_type, tag_system, model_path, train_pos=train_pos,
@@ -189,6 +193,8 @@ def initialise_model(
         arc_drop=arc_drop,
         deprel_drop=deprel_drop,
         mix_drop=mix_drop,
+        arc_hidden=arc_hidden,
+        deprel_hidden=deprel_hidden,
     )
     tagging_model = model.ModelForTagging(config=config)  # type: ignore
     tagging_model.compile()

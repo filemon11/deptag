@@ -119,6 +119,8 @@ class TaggingSettings:
     arc_drop: float = 0.2
     deprel_drop: float = 0.3
     mix_drop: float = 0.1
+    arc_hidden: int = 500
+    deprel_hidden: int = 100
 
 
 @dataclasses.dataclass(frozen=True)
@@ -154,6 +156,8 @@ class TaggingRangesSettings:
     arc_drop: tuple[float, float] | None = None
     deprel_drop: tuple[float, float] | None = None
     mix_drop: tuple[float, float] | None = None
+    arc_hidden: tuple[int, int] | None = None
+    deprel_hidden: tuple[int, int] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
