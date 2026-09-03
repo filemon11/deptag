@@ -429,7 +429,7 @@ def train_command(
     id2deprel = train_dataset.id2deprel
 
     logging.info("Initializing the model")
-    tagging_model = config.initialize_model(
+    tagging_model = config.initialise_model(
         tagging_settings.model_name, sup2id, tagging_settings.model_path,
         train_pos=tagging_settings.train_pos,
         train_xpos=tagging_settings.train_xpos,
@@ -455,6 +455,10 @@ def train_command(
         sup_label_smoothing=tagging_settings.sup_label_smoothing,
         feats_label_smoothing=tagging_settings.feats_label_smoothing,
         subtypes_label_smoothing=tagging_settings.subtypes_label_smoothing,
+        proj_drop=tagging_settings.proj_drop,
+        arc_drop=tagging_settings.arc_drop,
+        deprel_drop=tagging_settings.deprel_drop,
+        mix_drop=tagging_settings.mix_drop,
     )
     assert tagging_model is not None
     tagging_model.to(device)
@@ -1348,7 +1352,7 @@ def evaluate_command(args: settings.Settings, k: int = 1):
 
     id2pos = {i: pos for pos, i in eval_dataset.pos_dict.items()}
 
-    model = config.initialize_model(
+    model = config.initialise_model(
         args.tagging.model_name, sup2id,
         args.tagging.model_path,
         num_pos_tags=len(eval_dataset.pos_dict),
@@ -1375,7 +1379,11 @@ def evaluate_command(args: settings.Settings, k: int = 1):
         deprel_label_smoothing=args.tagging.deprel_label_smoothing,
         sup_label_smoothing=args.tagging.sup_label_smoothing,
         feats_label_smoothing=args.tagging.feats_label_smoothing,
-        subtypes_label_smoothing=args.tagging.subtypes_label_smoothing,)
+        subtypes_label_smoothing=args.tagging.subtypes_label_smoothing,
+        proj_drop=args.tagging.proj_drop,
+        arc_drop=args.tagging.arc_drop,
+        deprel_drop=args.tagging.deprel_drop,
+        mix_drop=args.tagging.mix_drop,)
 
     assert model is not None
 
@@ -1629,7 +1637,7 @@ def predict_command(args: settings.Settings):
         pred_data, prefix, sup2id, args.tagging.model_path,
         args.tagging.batch_size, args.tagging.factorised is not False)
 
-    model = config.initialize_model(
+    model = config.initialise_model(
         args.tagging.model_name, sup2id, args.tagging.model_path,
         num_pos_tags=len(pred_dataset.pos_dict),
         num_xpos_tags=len(pred_dataset.xpos_dict),
@@ -1653,7 +1661,11 @@ def predict_command(args: settings.Settings):
         deprel_label_smoothing=args.tagging.deprel_label_smoothing,
         sup_label_smoothing=args.tagging.sup_label_smoothing,
         feats_label_smoothing=args.tagging.feats_label_smoothing,
-        subtypes_label_smoothing=args.tagging.subtypes_label_smoothing,)
+        subtypes_label_smoothing=args.tagging.subtypes_label_smoothing,
+        proj_drop=args.tagging.proj_drop,
+        arc_drop=args.tagging.arc_drop,
+        deprel_drop=args.tagging.deprel_drop,
+        mix_drop=args.tagging.mix_drop,)
     assert model is not None
 
     model.load_state_dict(

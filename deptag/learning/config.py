@@ -51,6 +51,10 @@ def generate_config(
         sup_label_smoothing: float = 0.0,
         feats_label_smoothing: float = 0.0,
         subtypes_label_smoothing: float = 0.0,
+        proj_drop: float = 0.1,
+        arc_drop: float = 0.2,
+        deprel_drop: float = 0.3,
+        mix_drop: float = 0.1,
         ) -> transformers.PretrainedConfig:
 
     config = model.AutoConfig.from_pretrained(
@@ -84,10 +88,10 @@ def generate_config(
         "num_xpos_tags": num_xpos_tags,
         "extra_num_labels": extra_num_labels,
         "train_subtypes": train_subtypes,
-        "proj_drop": 0.1,
-        "arc_drop": 0.2,
-        "deprel_drop": 0.3,
-        "mix_drop": 0.1,
+        "proj_drop": proj_drop,
+        "arc_drop": arc_drop,
+        "deprel_drop": deprel_drop,
+        "mix_drop": mix_drop,
         "use_pos": False,
 
         "n_heads": config.num_attention_heads,
@@ -136,7 +140,7 @@ def generate_config(
     return config
 
 
-def initialize_model(
+def initialise_model(
         model_type: str, tag_system: Mapping[str, int], model_path: str,
         num_deprel_tags: int, num_sup_deprel_tags: int,
         train_deprel: bool = False,
@@ -157,6 +161,10 @@ def initialize_model(
         sup_label_smoothing: float = 0.0,
         feats_label_smoothing: float = 0.0,
         subtypes_label_smoothing: float = 0.0,
+        proj_drop: float = 0.1,
+        arc_drop: float = 0.2,
+        deprel_drop: float = 0.3,
+        mix_drop: float = 0.1,
         ) -> model.ModelForTagging | None:
     config = generate_config(
         model_type, tag_system, model_path, train_pos=train_pos,
@@ -177,6 +185,10 @@ def initialize_model(
         sup_label_smoothing=sup_label_smoothing,
         feats_label_smoothing=feats_label_smoothing,
         subtypes_label_smoothing=subtypes_label_smoothing,
+        proj_drop=proj_drop,
+        arc_drop=arc_drop,
+        deprel_drop=deprel_drop,
+        mix_drop=mix_drop,
     )
     tagging_model = model.ModelForTagging(config=config)  # type: ignore
     tagging_model.compile()

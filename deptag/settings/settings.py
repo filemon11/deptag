@@ -115,6 +115,10 @@ class TaggingSettings:
     subtypes_label_smoothing: float = 0.0
     sup_score_scale: float = 1.0
     loss_weights: None | dict[str, float] = None
+    proj_drop: float = 0.1
+    arc_drop: float = 0.2
+    deprel_drop: float = 0.3
+    mix_drop: float = 0.1
 
 
 @dataclasses.dataclass(frozen=True)
@@ -146,6 +150,10 @@ class TaggingRangesSettings:
     sup_score_scale: tuple[float, float] | None = None
     loss_weights: None | dict[
         str, tuple[float, float]] = None
+    proj_drop: tuple[float, float] | None = None
+    arc_drop: tuple[float, float] | None = None
+    deprel_drop: tuple[float, float] | None = None
+    mix_drop: tuple[float, float] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
