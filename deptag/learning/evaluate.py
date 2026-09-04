@@ -149,7 +149,7 @@ def pad_deprel_gold(
 @overload
 def predict(
         tagging_model: model.ModelForTagging, eval_dataloader, dataset_size,
-        num_tags, batch_size, device,
+        num_tags, batch_size, device: torch.types.Device,
         report_loss: Literal[True], deprels_from_pred_head: bool = False,
         deprels_matrix: bool = False
         ) -> tuple[
@@ -174,7 +174,8 @@ def predict(
 @overload
 def predict(
         tagging_model: model.ModelForTagging, eval_dataloader, dataset_size,
-        num_tags, batch_size, device,
+        num_tags, batch_size, device: torch.types.Device = torch.device(
+            'cuda' if torch.cuda.is_available() else 'cpu'),
         report_loss: Literal[False] = False,
         deprels_from_pred_head: bool = False, deprels_matrix: bool = False
         ) -> tuple[
@@ -198,9 +199,11 @@ def predict(
 
 def predict(
         tagging_model: model.ModelForTagging, eval_dataloader,
-        dataset_size, num_tags, batch_size, device,
+        dataset_size, num_tags, batch_size,
+        device: torch.types.Device = torch.device(
+            'cuda' if torch.cuda.is_available() else 'cpu'),
         report_loss: bool = False, deprels_from_pred_head: bool = False,
-        deprels_matrix: bool = False
+        deprels_matrix: bool = False,
         ) -> tuple[
             np.ndarray | None, np.ndarray | None,
             np.ndarray | None, np.ndarray | None,
@@ -258,7 +261,7 @@ def predict(
         batch = {k: v.to(device) for k, v in batch.items()}
 
         with torch.no_grad(), torch.amp.autocast(
-                "cpu" if device == torch.device("cpu") else "cuda",
+                device.type,
                 enabled=True, dtype=torch.float16
                 ):
 

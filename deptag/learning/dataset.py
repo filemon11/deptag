@@ -99,12 +99,11 @@ def ptb_unescape(sent: Iterable[str]) -> list[str]:
 
 class TaggingDataset(torch.utils.data.Dataset):
     def __init__(
-            self, 
+            self,
             split,
             tokenizer,
             tag_system: Mapping[str, int],
             data: Sequence[Sequence[extraction.Token]],
-            device,
             dataset: str,
             max_train_len=350,
             factorised_max_left_right: None | tuple[int, int] = None,
@@ -134,7 +133,6 @@ class TaggingDataset(torch.utils.data.Dataset):
         self.max_r = max([lr[1] for lr in self.lr_args])
 
         self.pad_token_id = self.tokenizer.pad_token_id
-        self.device = device
 
         if factorised_max_left_right is None:
             self.max_left = None

@@ -32,8 +32,6 @@ hf_output_capturing.torch = torch  # type: ignore
 
 torch.set_float32_matmul_precision("medium")
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
 
 def initialize_tag_system(
         ds: str,
@@ -72,6 +70,28 @@ def save_vocab(args: settings.Settings):
         pickle.dump(sup2id, f)
 
 
+def prepare_training_loaders(
+        train_dataset: dataset.TaggingDataset,
+        eval_dataset: dataset.TaggingDataset,
+        batch_size: int,
+        device: torch.types.Device = torch.device(
+            'cuda' if torch.cuda.is_available() else 'cpu'),
+        ) -> tuple[DataLoader, DataLoader]:
+    train_dataloader = DataLoader(
+        train_dataset, shuffle=True, batch_size=batch_size,
+        collate_fn=train_dataset.collate,
+        pin_memory=True,
+        pin_memory_device=device,  # type: ignore
+        # should only be done in multi-gpu setting when providing device
+    )
+    eval_dataloader = DataLoader(
+        eval_dataset, batch_size=batch_size, collate_fn=eval_dataset.collate,
+        pin_memory=True,
+        pin_memory_device=device,  # type: ignore
+    )
+    return train_dataloader, eval_dataloader
+
+
 def prepare_training_data(
         train_data: Sequence[Sequence[extraction.Token]],
         eval_data: Sequence[Sequence[extraction.Token]],
@@ -82,9 +102,14 @@ def prepare_training_data(
         factorised: bool = False,
         train_fraction: float = 1.0,
         eval_fraction: float = 1.0,
+        get_loaders: bool = True,
+        device: torch.types.Device = torch.device(
+            'cuda' if torch.cuda.is_available() else 'cpu')
         ) -> tuple[
             dataset.TaggingDataset, dataset.TaggingDataset,
-            DataLoader, DataLoader]:
+            DataLoader, DataLoader] | tuple[
+            dataset.TaggingDataset, dataset.TaggingDataset,
+            None, None]:
 
     tokeniser = transformers.AutoTokenizer.from_pretrained(
         model_path.split("/")[-1], truncation=True, use_fast=True)
@@ -95,24 +120,20 @@ def prepare_training_data(
         factorised_max_left_right = None
 
     train_dataset = dataset.TaggingDataset(
-        "train", tokeniser, tag_system, train_data, device, dataset_name,
+        "train", tokeniser, tag_system, train_data, dataset_name,
         factorised_max_left_right=factorised_max_left_right,
         fraction=train_fraction)
     eval_dataset = dataset.TaggingDataset(
-        "eval", tokeniser, tag_system, eval_data, device, dataset_name,
+        "eval", tokeniser, tag_system, eval_data, dataset_name,
         factorised_max_left_right=factorised_max_left_right,
         fraction=eval_fraction)
 
-    train_dataloader = DataLoader(
-        train_dataset, shuffle=True, batch_size=batch_size,
-        collate_fn=train_dataset.collate,
-        pin_memory=True
-    )
-    eval_dataloader = DataLoader(
-        eval_dataset, batch_size=batch_size, collate_fn=eval_dataset.collate,
-        pin_memory=True
-    )
-    return train_dataset, eval_dataset, train_dataloader, eval_dataloader
+    if get_loaders:
+        train_dataloader, eval_dataloader = prepare_training_loaders(
+            train_dataset, eval_dataset, batch_size=batch_size,
+            device=device,)
+        return train_dataset, eval_dataset, train_dataloader, eval_dataloader
+    return train_dataset, eval_dataset, None, None
 
 
 def prepare_test_data(
@@ -133,7 +154,7 @@ def prepare_test_data(
         factorised_max_left_right = None
 
     test_dataset = dataset.TaggingDataset(
-        "test", tokeniser, tag_system, test_data, device,
+        "test", tokeniser, tag_system, test_data,
         dataset_name, factorised_max_left_right=factorised_max_left_right,
     )
     test_dataloader = DataLoader(
@@ -336,9 +357,14 @@ def prepare_data_and_loaders(
         dep_args: settings.DepSettings,
         model_path: str,
         batch_size: int,
+        get_loaders: bool = True,
+        device: torch.types.Device = torch.device(
+            'cuda' if torch.cuda.is_available() else 'cpu'),
         ) -> tuple[
             dataset.TaggingDataset, dataset.TaggingDataset,
-            DataLoader, DataLoader]:
+            DataLoader, DataLoader] | tuple[
+            dataset.TaggingDataset, dataset.TaggingDataset,
+            None, None]:
     data_path = pathlib.Path(file_args.data_folder)
     prefix: str = file_args.conllu_file
 
@@ -381,7 +407,9 @@ def prepare_data_and_loaders(
             sup2id, model_path, batch_size,
             factorised=True,
             train_fraction=file_args.train_fraction,
-            eval_fraction=file_args.eval_fraction,))
+            eval_fraction=file_args.eval_fraction,
+            get_loaders=get_loaders,
+            device=device))
 
     return train_dataset, dev_dataset, train_dataloader, dev_dataloader
 
@@ -397,7 +425,10 @@ def train_command(
             DataLoader,
             DataLoader] | None = None,
         save_model: bool = True,
-        final_eval: bool = True) -> Iterator[float]:
+        final_eval: bool = True,
+        device: torch.types.Device = torch.device(
+            'cuda' if torch.cuda.is_available() else 'cpu'),
+        ) -> Iterator[float]:
     if data is None:
         assert args is not None
         tagging_settings = args.tagging
@@ -408,7 +439,8 @@ def train_command(
             train_dataloader, dev_dataloader
         ) = prepare_data_and_loaders(
             file_settings, args.deprels,
-            args.tagging.model_path, args.tagging.batch_size)
+            args.tagging.model_path, args.tagging.batch_size,
+            device=device)
     else:
         assert tagging_settings is not None
         assert file_settings is not None
@@ -506,9 +538,7 @@ def train_command(
                     )
                 )
 
-    scaler = GradScaler(
-        "cpu" if device == torch.device("cpu") else "cuda")
-
+    scaler = GradScaler(device.type)
     optimizer.zero_grad()
 
     logging.info("Starting The Training Loop")
@@ -595,7 +625,8 @@ def train_command(
 
     loss_weights = defaultdict(
         lambda: 1.0,
-        tagging_settings.loss_weights if tagging_settings.loss_weights is not None
+        tagging_settings.loss_weights
+        if tagging_settings.loss_weights is not None
         else dict())
 
     # TODO: change
@@ -635,7 +666,7 @@ def train_command(
                 batch = {k: v.to(device) for k, v in batch.items()}
 
                 with torch.amp.autocast(
-                        "cpu" if device == torch.device("cpu") else "cuda",
+                        device.type,
                         enabled=True, dtype=torch.float16
                         ):
                     # main losses:
@@ -699,8 +730,7 @@ def train_command(
 
                     num_active_losses = len(primary_loss_names)
                     loss: torch.Tensor = torch.zeros(
-                        (1,), device="cpu" if device == torch.device("cpu")
-                        else "cuda")
+                        (1,), device=device)
 
                     primary_loss = torch.stack(
                         [
@@ -1298,7 +1328,10 @@ def _finish_training(
         dev_subtypes_accs,)
 
 
-def evaluate_command(args: settings.Settings, k: int = 1):
+def evaluate_command(
+        args: settings.Settings, k: int = 1,
+        device: torch.types.Device = torch.device(
+            'cuda' if torch.cuda.is_available() else 'cpu')):
     data_path: pathlib.Path = pathlib.Path(
         args.file.data_folder)
 
@@ -1608,7 +1641,10 @@ def evaluate_command(args: settings.Settings, k: int = 1):
         f"eval metric {args.tagging.eval_metric}:", eval_metric)
 
 
-def predict_command(args: settings.Settings):
+def predict_command(
+        args: settings.Settings,
+        device: torch.types.Device = torch.device(
+            'cuda' if torch.cuda.is_available() else 'cpu')):
     data_path: pathlib.Path = pathlib.Path(
         args.file.data_folder)
 

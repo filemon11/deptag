@@ -1,22 +1,40 @@
-# create data once
-# sample Tagging Settings
-# run train -> make it an Iterable that yields the eval metric
-
-# TODO: deal with checkpoints
-
 from . import learn
 from .. import settings
 from ..settings import validation
+import torch
 import optuna
 import dataclasses
 import copy
 import os
 import pickle
+import contextlib
+import multiprocessing
 
-from typing import TypeVar, Any, overload, Sequence
+
+from typing import TypeVar, Any, overload, Sequence, Generator, Literal
 
 
 SAMPLE_LOG = ("lr", )
+
+
+class GpuQueue:
+    # From https://vordeck.de/kn/optuna-gpu-queue
+    def __init__(self):
+        self.queue = multiprocessing.Manager().Queue()
+        device_count = torch.cuda.device_count()
+        print(f"Found {device_count} device(s).")
+        self.all_idxs = list(
+            range(device_count)) if device_count > 0 else ["cpu"]
+        self.all_idxs = [0, "cpu"]
+        for idx in self.all_idxs:
+            self.queue.put(idx)
+
+    @contextlib.contextmanager
+    def one_gpu_per_process(self) -> Generator[
+            int | Literal["cpu"], None, None]:
+        current_idx = self.queue.get()
+        yield current_idx
+        self.queue.put(current_idx)
 
 
 @overload
@@ -128,7 +146,10 @@ def sample(
 class Objective:
     def __init__(
             self,
-            args: settings.OptSettings) -> None:
+            args: settings.OptSettings,
+            gpu_queue: GpuQueue,
+            ) -> None:
+        self.gpu_queue = gpu_queue
         self.args = args
 
         self.data = learn.prepare_data_and_loaders(
@@ -136,36 +157,43 @@ class Objective:
             self.args.deprels,
             self.args.tagging.model_path,
             self.args.tagging.batch_size,
-        )
+            get_loaders=False,
+            device=torch.device("cpu"),
+        )[:2]
 
     def __call__(self, trial: optuna.Trial) -> float:
-        tagging_settings = sample(
-            trial,
-            self.args.tagging,
-            self.args.ranges)
-        validation.assert_tagging_settings(
-                tagging_settings
-            )
-        file_settings = self.args.file
-        dep_settings = self.args.deprels
+        with self.gpu_queue.one_gpu_per_process() as gpu_i:
+            tagging_settings = sample(
+                trial,
+                self.args.tagging,
+                self.args.ranges)
+            validation.assert_tagging_settings(
+                    tagging_settings
+                )
+            file_settings = self.args.file
+            dep_settings = self.args.deprels
 
-        results: list[float] = []
-        for step, eval_score in enumerate(
-                learn.train_command(
-                    tagging_settings=tagging_settings,
-                    file_settings=file_settings,
-                    dep_settings=dep_settings,
-                    data=self.data,
-                    save_model=False)):
-            results.append(eval_score)
-            trial.report(eval_score, step)
+            results: list[float] = []
+            for step, eval_score in enumerate(
+                    learn.train_command(
+                        tagging_settings=tagging_settings,
+                        file_settings=file_settings,
+                        dep_settings=dep_settings,
+                        data=(*self.data, *learn.prepare_training_loaders(
+                            self.data[0], self.data[1],
+                            self.args.tagging.batch_size,
+                            device=torch.device(gpu_i))),
+                        save_model=False,
+                        device=torch.device(gpu_i))):
+                results.append(eval_score)
+                trial.report(eval_score, step)
 
-            # Handle pruning
-            if trial.should_prune():
-                raise optuna.TrialPruned()
+                # Handle pruning
+                if trial.should_prune():
+                    raise optuna.TrialPruned()
 
-        # Return best eval_score
-        return max(results)
+            # Return best eval_score
+            return max(results)
 
 
 def optimise(args: settings.OptSettings, seed: int = 1):
@@ -204,11 +232,14 @@ def optimise(args: settings.OptSettings, seed: int = 1):
         storage=storage_name,
     )
 
-    objective = Objective(args)
+    gpu_queue = GpuQueue()
+    objective = Objective(args, gpu_queue)
 
-    for _ in range(args.n_trials):
+    for _ in range(args.n_trials//len(gpu_queue.all_idxs)):
         study.optimize(
-            objective, n_trials=1)
+            objective,
+            n_trials=len(gpu_queue.all_idxs),
+            n_jobs=len(gpu_queue.all_idxs))
 
         # Store sampler and pruner
         with open(sampler_path, "wb") as fout:
