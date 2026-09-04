@@ -25,7 +25,6 @@ class GpuQueue:
         print(f"Found {device_count} device(s).")
         self.all_idxs = list(
             range(device_count)) if device_count > 0 else ["cpu"]
-        self.all_idxs = [0, "cpu"]
         for idx in self.all_idxs:
             self.queue.put(idx)
 
