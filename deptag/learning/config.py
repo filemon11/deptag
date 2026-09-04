@@ -27,7 +27,6 @@ def get_max_lr(tag_system: Mapping[str, int]) -> tuple[int, int]:
 
 
 def generate_config(
-        model_type: str,
         tag_system: Mapping[str, int],
         model_path: str,
         num_deprel_tags: int,
@@ -143,7 +142,7 @@ def generate_config(
 
 
 def initialise_model(
-        model_type: str, tag_system: Mapping[str, int], model_path: str,
+        tag_system: Mapping[str, int], model_path: str,
         num_deprel_tags: int, num_sup_deprel_tags: int,
         train_deprel: bool = False,
         train_pos: bool = True, train_xpos: bool = False,
@@ -171,7 +170,7 @@ def initialise_model(
         deprel_hidden: int = 100,
         ) -> model.ModelForTagging | None:
     config = generate_config(
-        model_type, tag_system, model_path, train_pos=train_pos,
+        tag_system, model_path, train_pos=train_pos,
         train_xpos=train_xpos,
         num_pos_tags=num_pos_tags, num_xpos_tags=num_xpos_tags,
         num_deprel_tags=num_deprel_tags,

@@ -430,7 +430,7 @@ def train_command(
 
     logging.info("Initializing the model")
     tagging_model = config.initialise_model(
-        tagging_settings.model_name, sup2id, tagging_settings.model_path,
+        sup2id, tagging_settings.model_path,
         train_pos=tagging_settings.train_pos,
         train_xpos=tagging_settings.train_xpos,
         train_feats=tagging_settings.train_feats,
@@ -1355,7 +1355,7 @@ def evaluate_command(args: settings.Settings, k: int = 1):
     id2pos = {i: pos for pos, i in eval_dataset.pos_dict.items()}
 
     model = config.initialise_model(
-        args.tagging.model_name, sup2id,
+        sup2id,
         args.tagging.model_path,
         num_pos_tags=len(eval_dataset.pos_dict),
         num_xpos_tags=len(eval_dataset.xpos_dict),
@@ -1642,7 +1642,7 @@ def predict_command(args: settings.Settings):
         args.tagging.batch_size, args.tagging.factorised is not False)
 
     model = config.initialise_model(
-        args.tagging.model_name, sup2id, args.tagging.model_path,
+        sup2id, args.tagging.model_path,
         num_pos_tags=len(pred_dataset.pos_dict),
         num_xpos_tags=len(pred_dataset.xpos_dict),
         num_deprel_tags=len(
