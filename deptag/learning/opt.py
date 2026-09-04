@@ -147,9 +147,14 @@ class Objective:
             self,
             args: settings.OptSettings,
             gpu_queue: GpuQueue,
+            sampler_path: str,
+            pruner_path: str,
             ) -> None:
         self.gpu_queue = gpu_queue
         self.args = args
+
+        self.sampler_path: str = sampler_path
+        self.pruner_path: str = pruner_path
 
         self.data = learn.prepare_data_and_loaders(
             self.args.file,
@@ -159,6 +164,16 @@ class Objective:
             get_loaders=False,
             device=torch.device("cpu"),
         )[:2]
+
+    def save_pruner_and_sampler(
+            self, trial: optuna.Trial,
+            gpu_i: int | Literal["cpu"] = "cpu") -> None:
+        # In multi-GPU save only if on GPU 0
+        if gpu_i == 0 or gpu_i == "cpu":
+            with open(self.sampler_path, "wb") as fout:
+                pickle.dump(trial.study.sampler, fout)
+            with open(self.pruner_path, "wb") as fout:
+                pickle.dump(trial.study.sampler, fout)
 
     def __call__(self, trial: optuna.Trial) -> float:
         with self.gpu_queue.one_gpu_per_process() as gpu_i:
@@ -183,15 +198,18 @@ class Objective:
                             self.args.tagging.batch_size,
                             device=torch.device(gpu_i))),
                         save_model=False,
-                        device=torch.device(gpu_i))):
+                        device=torch.device(gpu_i),
+                        final_eval=False)):
                 results.append(eval_score)
                 trial.report(eval_score, step)
 
                 # Handle pruning
                 if trial.should_prune():
+                    self.save_pruner_and_sampler(trial, gpu_i)
                     raise optuna.TrialPruned()
 
             # Return best eval_score
+            self.save_pruner_and_sampler(trial, gpu_i)
             return max(results)
 
 
@@ -232,16 +250,10 @@ def optimise(args: settings.OptSettings, seed: int = 1):
     )
 
     gpu_queue = GpuQueue()
-    objective = Objective(args, gpu_queue)
+    objective = Objective(
+        args, gpu_queue, sampler_path, pruner_path)
 
-    for _ in range(args.n_trials//len(gpu_queue.all_idxs)):
-        study.optimize(
-            objective,
-            n_trials=len(gpu_queue.all_idxs),
-            n_jobs=len(gpu_queue.all_idxs))
-
-        # Store sampler and pruner
-        with open(sampler_path, "wb") as fout:
-            pickle.dump(study.sampler, fout)
-        with open(pruner_path, "wb") as fout:
-            pickle.dump(study.sampler, fout)
+    study.optimize(
+        objective,
+        n_trials=args.n_trials,
+        n_jobs=len(gpu_queue.all_idxs))

@@ -81,13 +81,13 @@ def prepare_training_loaders(
         train_dataset, shuffle=True, batch_size=batch_size,
         collate_fn=train_dataset.collate,
         pin_memory=True,
-        pin_memory_device=device,  # type: ignore
+        # pin_memory_device=device,  # type: ignore
         # should only be done in multi-gpu setting when providing device
     )
     eval_dataloader = DataLoader(
         eval_dataset, batch_size=batch_size, collate_fn=eval_dataset.collate,
         pin_memory=True,
-        pin_memory_device=device,  # type: ignore
+        # pin_memory_device=device,  # type: ignore
     )
     return train_dataloader, eval_dataloader
 
@@ -1188,7 +1188,8 @@ def train_command(
                                 n_iter,
                                 tagging_settings.factorised,
                                 seen_factors,
-                                t_sup=t_sup)
+                                t_sup=t_sup,
+                                device=device)
                         return
                     # end of epoch
 
@@ -1208,7 +1209,7 @@ def train_command(
             tagging_model, sup2id, dev_dataloader, dev_dataset,
             run_name, writer, tagging_settings, n_iter,
             tagging_settings.factorised, seen_factors,
-            t_sup=t_sup)
+            t_sup=t_sup, device=device)
 
 
 def _save_model(
@@ -1266,7 +1267,9 @@ def _finish_training(
         factorised: Literal[
             "seen", "complete", "structural", False],
         seen_factors: factorisation.SupertagFactors | None = None,
-        t_sup: float = 1):
+        t_sup: float = 1,
+        device: torch.types.Device = torch.device(
+                    'cuda' if torch.cuda.is_available() else 'cpu'),):
 
     (
         predictions, eval_labels,
