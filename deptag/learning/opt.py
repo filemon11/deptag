@@ -173,7 +173,7 @@ class Objective:
             with open(self.sampler_path, "wb") as fout:
                 pickle.dump(trial.study.sampler, fout)
             with open(self.pruner_path, "wb") as fout:
-                pickle.dump(trial.study.sampler, fout)
+                pickle.dump(trial.study.pruner, fout)
 
     def __call__(self, trial: optuna.Trial) -> float:
         with self.gpu_queue.one_gpu_per_process() as gpu_i:
