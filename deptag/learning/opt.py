@@ -242,13 +242,15 @@ def optimise(args: settings.OptSettings, seed: int = 1):
     # group not needed due to no tree-structured sampling space
 
     storage_name = f"sqlite:///{args.opt_path}/{args.study_name}.db"
+    storage = optuna.storages.RDBStorage(
+        url=storage_name, engine_kwargs={"connect_args": {"timeout": 100}})
     study = optuna.create_study(
         pruner=pruner,
         sampler=sampler,
         study_name=args.study_name,
         direction="maximize",
         load_if_exists=args.tagging.mode == "continue",
-        storage=storage_name,
+        storage=storage,
     )
 
     gpu_queue = GpuQueue()
