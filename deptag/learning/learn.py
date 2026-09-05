@@ -493,6 +493,7 @@ def train_command(
         mix_drop=tagging_settings.mix_drop,
         deprel_hidden=tagging_settings.deprel_hidden,
         arc_hidden=tagging_settings.arc_hidden,
+        compile=tagging_settings.compile,
     )
     assert tagging_model is not None
     tagging_model.to(device)
@@ -1423,7 +1424,8 @@ def evaluate_command(
         deprel_drop=args.tagging.deprel_drop,
         mix_drop=args.tagging.mix_drop,
         deprel_hidden=args.tagging.deprel_hidden,
-        arc_hidden=args.tagging.arc_hidden,)
+        arc_hidden=args.tagging.arc_hidden,
+        compile=args.tagging.compile,)
 
     assert model is not None
 
@@ -1710,7 +1712,8 @@ def predict_command(
         deprel_drop=args.tagging.deprel_drop,
         mix_drop=args.tagging.mix_drop,
         deprel_hidden=args.tagging.deprel_hidden,
-        arc_hidden=args.tagging.arc_hidden,)
+        arc_hidden=args.tagging.arc_hidden,
+        compile=args.tagging.compile,)
     assert model is not None
 
     model.load_state_dict(

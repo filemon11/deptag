@@ -168,6 +168,7 @@ def initialise_model(
         mix_drop: float = 0.1,
         arc_hidden: int = 500,
         deprel_hidden: int = 100,
+        compile: bool = True,
         ) -> model.ModelForTagging | None:
     config = generate_config(
         tag_system, model_path, train_pos=train_pos,
@@ -196,7 +197,8 @@ def initialise_model(
         deprel_hidden=deprel_hidden,
     )
     tagging_model = model.ModelForTagging(config=config)  # type: ignore
-    tagging_model.compile()
+    if compile:
+        tagging_model.compile()
     return tagging_model
 
 

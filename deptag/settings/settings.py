@@ -121,6 +121,7 @@ class TaggingSettings:
     mix_drop: float = 0.1
     arc_hidden: int = 500
     deprel_hidden: int = 100
+    compile: bool = True
 
 
 @dataclasses.dataclass(frozen=True)
