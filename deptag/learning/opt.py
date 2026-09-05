@@ -32,8 +32,10 @@ class GpuQueue:
     def one_gpu_per_process(self) -> Generator[
             int | Literal["cpu"], None, None]:
         current_idx = self.queue.get()
-        yield current_idx
-        self.queue.put(current_idx)
+        try:
+            yield current_idx
+        finally:
+            self.queue.put(current_idx)
 
 
 @overload
