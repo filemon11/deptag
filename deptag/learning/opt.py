@@ -98,16 +98,16 @@ def value_sample(
         ) -> Sampled:
     if isinstance(value, tuple):
         assert len(value) > 1
-        if isinstance(value[0], (int, float)):
+        if isinstance(value[0], bool):
+            pass
+        elif isinstance(value[0], (int, float)):
             assert len(value) == 2
             assert type(value[0]) is type(value[1])
             return suggest_numerical(
                 trial, name, value  # type: ignore
             )
-        else:
-            return suggest_categorical(
-                trial, name, value
-            )
+        return suggest_categorical(
+            trial, name, value)
 
     elif isinstance(value, dict):
         out_dict: dict[str, Sampled] = {}
