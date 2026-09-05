@@ -175,6 +175,7 @@ class OptSettings:
     sampler_n_startup_trials: int = 10
     sampler_n_ei_candidates: int = 24
     sampler_multivariate: bool = True
+    opt_path: str = "./opt"
 
 
 @dataclasses.dataclass(frozen=True)

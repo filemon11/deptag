@@ -216,7 +216,7 @@ class Objective:
 
 
 def optimise(args: settings.OptSettings, seed: int = 1):
-    pruner_path = f"./opt/{args.study_name}_pruner.pkl"
+    pruner_path = f"{args.opt_path}/{args.study_name}_pruner.pkl"
     if args.tagging.mode == "continue" and os.path.exists(
             pruner_path):
         pruner = pickle.load(open(pruner_path, "rb"))
@@ -228,7 +228,7 @@ def optimise(args: settings.OptSettings, seed: int = 1):
             args.pruner_bootstrap_count,
         )
 
-    sampler_path = f"./opt/{args.study_name}_sampler.pkl"
+    sampler_path = f"{args.opt_path}/{args.study_name}_sampler.pkl"
     if args.tagging.mode == "continue" and os.path.exists(
             sampler_path):
         sampler = pickle.load(open(sampler_path, "rb"))
@@ -241,7 +241,7 @@ def optimise(args: settings.OptSettings, seed: int = 1):
         )
     # group not needed due to no tree-structured sampling space
 
-    storage_name = f"sqlite:///./opt/{args.study_name}.db"
+    storage_name = f"sqlite:///{args.opt_path}/{args.study_name}.db"
     study = optuna.create_study(
         pruner=pruner,
         sampler=sampler,
