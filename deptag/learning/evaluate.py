@@ -280,6 +280,7 @@ def predict(
             max_len = max(max_len, sup_logits.shape[1])
             predictions.append(sup_logits)
         labels = batch['labels'].int().cpu().numpy()
+        max_len = max(max_len, labels.shape[1])
         eval_labels.append(labels)
 
         if logits["pos"] is not None:
@@ -287,6 +288,7 @@ def predict(
             pos_predictions.append(pos_logits)
             max_len = max(max_len, pos_logits.shape[1])
         pos_labels = batch['pos_ids'].int().cpu().numpy()
+        max_len = max(max_len, pos_labels.shape[1])
         eval_pos_labels.append(pos_labels)
 
         pred_heads = None
@@ -393,6 +395,7 @@ def predict(
             xpos_predictions.append(xpos_logits)
             max_len = max(max_len, xpos_logits.shape[1])
         xpos_labels = batch['xpos_ids'].int().cpu().numpy()
+        max_len = max(max_len, xpos_labels.shape[1])
         eval_xpos_labels.append(xpos_labels)
 
         for f_name, f_logits in logits["feats"].items():

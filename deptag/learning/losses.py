@@ -2,7 +2,6 @@ import torch
 import torch.nn.functional as F
 
 
-# @torch.compile()  # (backend="aot_eager")
 def calc_loss_helper(
         logits: torch.Tensor, labels: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
