@@ -59,7 +59,8 @@ def collect_relations(
         without_labels: bool = False,
         distinguish_fallback_subtypes: bool = True,
         merged_fallback_subtypes: bool = True,
-        distinguish_merged_fallback_subtypes: bool = True
+        distinguish_merged_fallback_subtypes: bool = True,
+        subtypes: bool = True,
         ) -> list[RawTag]:
     # Returns [([(daughter_position, label), ...],
     # (head_position, label) | None), ...]
@@ -68,6 +69,11 @@ def collect_relations(
 
     daughters: list[list[RawArc]] = [[] for _ in sentence]
     heads: list[RawArc | None] = [None]*len(sentence)
+
+    def optional_subtype(deprel: str) -> str:
+        if subtypes or not data.has_subtype(deprel):
+            return deprel
+        return data.split_main_sub(deprel)[0]
 
     proper_item_num: int = 0
     for token in sentence:
@@ -80,19 +86,21 @@ def collect_relations(
 
         if deprel in arguments:
             daughters[head_id].append(
-                (token_id, "" if without_labels else deprel_merge(
-                    deprel,
-                    deprel_to_new,
-                    merged_fallback_subtypes,
-                    distinguish_merged_fallback_subtypes)))
+                (token_id, "" if without_labels else optional_subtype(
+                    deprel_merge(
+                        deprel,
+                        deprel_to_new,
+                        merged_fallback_subtypes,
+                        distinguish_merged_fallback_subtypes))))
         elif deprel in adjuncts:
             heads[token_id] = (
-                head_id, "" if without_labels else deprel_merge(
-                    deprel,
-                    deprel_to_new,
-                    merged_fallback_subtypes,
-                    distinguish_merged_fallback_subtypes
-                ))
+                head_id, "" if without_labels else optional_subtype(
+                    deprel_merge(
+                        deprel,
+                        deprel_to_new,
+                        merged_fallback_subtypes,
+                        distinguish_merged_fallback_subtypes
+                    )))
         elif deprel in delete:
             pass
         elif data.has_subtype(deprel):
@@ -104,19 +112,19 @@ def collect_relations(
             if deprel_main in arguments:
                 daughters[head_id].append(
                     (token_id, "" if without_labels else deprel_merge(
-                        deprel,
-                        deprel_to_new,
-                        merged_fallback_subtypes,
-                        distinguish_merged_fallback_subtypes
-                    )))
+                            deprel,
+                            deprel_to_new,
+                            merged_fallback_subtypes,
+                            distinguish_merged_fallback_subtypes
+                        )))
             elif deprel_main in adjuncts:
                 heads[token_id] = (
                     head_id, "" if without_labels else deprel_merge(
-                        deprel,
-                        deprel_to_new,
-                        merged_fallback_subtypes,
-                        distinguish_merged_fallback_subtypes
-                    ))
+                            deprel,
+                            deprel_to_new,
+                            merged_fallback_subtypes,
+                            distinguish_merged_fallback_subtypes
+                        ))
             elif deprel_main in delete:
                 pass
             else:
@@ -436,6 +444,7 @@ def extract(
         merged_fallback_subtypes: bool = True,
         distinguish_merged_fallback_subtypes: bool = True,
         order_relations: bool = True,
+        subtypes: bool = True,
         ) -> Generator[
             tuple[
                 list[RawTag], list[RelativeTag],
@@ -473,6 +482,7 @@ def extract(
             merged_fallback_subtypes=merged_fallback_subtypes,
             distinguish_merged_fallback_subtypes=(
                 distinguish_merged_fallback_subtypes),
+            subtypes=subtypes,
         )
         relative_relations: list[RelativeTag] = [
             convert_raw_relation_to_relative(
@@ -620,6 +630,7 @@ def extract_and_write(
         merged_fallback_subtypes: bool = True,
         distinguish_merged_fallback_subtypes: bool = True,
         order_relations: bool = True,
+        subtypes: bool = True,
         ) -> Statistics:
     extractor = iter(extract(
         sentences, arguments, adjuncts, delete, merged,
@@ -629,6 +640,7 @@ def extract_and_write(
         distinguish_merged_fallback_subtypes=(
             distinguish_merged_fallback_subtypes),
         order_relations=order_relations,
+        subtypes=subtypes,
         )
     )
     writer = data.write_incr(

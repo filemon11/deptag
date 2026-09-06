@@ -61,6 +61,7 @@ def save_vocab(args: settings.Settings):
         distinguish_merged_fallback_subtypes=(
             args.deprels.distinguish_merged_fallback_subtypes),
         order_relations=args.deprels.order_relations,
+        subtypes=args.deprels.subtypes,
         )
 
     path = pathlib.Path(args.tagging.tag_vocab_path)
@@ -384,6 +385,7 @@ def prepare_data_and_loaders(
         distinguish_merged_fallback_subtypes=(
             dep_args.distinguish_merged_fallback_subtypes),
         order_relations=dep_args.order_relations,
+        subtypes=dep_args.subtypes,
         )
     dev_data = extraction.prepare(
         dev_reader,
@@ -397,6 +399,7 @@ def prepare_data_and_loaders(
         distinguish_merged_fallback_subtypes=(
             dep_args.distinguish_merged_fallback_subtypes),
         order_relations=dep_args.order_relations,
+        subtypes=dep_args.subtypes,
         )
 
     logging.info(f"Loaded {len(train_data)} training sentences.")
@@ -1355,6 +1358,7 @@ def evaluate_command(
         distinguish_merged_fallback_subtypes=(
             args.deprels.distinguish_merged_fallback_subtypes),
         order_relations=args.deprels.order_relations,
+        subtypes=dep_args.subtypes,
         )
 
     sup2id = initialize_tag_system(
@@ -1670,6 +1674,7 @@ def predict_command(
         distinguish_merged_fallback_subtypes=(
             args.deprels.distinguish_merged_fallback_subtypes),
         order_relations=args.deprels.order_relations,
+        subtypes=dep_args.subtypes,
         )
 
     logging.info("Initializing Tag System")

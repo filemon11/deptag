@@ -72,6 +72,7 @@ def load_and_write(
         distinguish_merged_fallback_subtypes=(
             sett.deprels.distinguish_merged_fallback_subtypes),
         order_relations=sett.deprels.order_relations,
+        subtypes=sett.deprels.subtypes,
     )
 
     if replace_labels_in_unicorns and replacement_threshold > 0:

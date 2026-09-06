@@ -30,6 +30,7 @@ def prepare_train(
         merged_fallback_subtypes: bool = True,
         distinguish_merged_fallback_subtypes: bool = True,
         order_relations: bool = True,
+        subtypes: bool = True,
         ) -> tuple[
             list[list[Token]], dict[str, int]]:
     # -> word, pos, supertag
@@ -54,6 +55,7 @@ def prepare_train(
             distinguish_merged_fallback_subtypes=(
                 distinguish_merged_fallback_subtypes),
             order_relations=order_relations,
+            subtypes=subtypes,
             ):
         sent: list[Token] = []
         for sup, word in zip(sen[2], sen[3]):
@@ -93,6 +95,7 @@ def prepare(
         merged_fallback_subtypes: bool = True,
         distinguish_merged_fallback_subtypes: bool = True,
         order_relations: bool = True,
+        subtypes: bool = True,
         ) -> list[list[Token]]:
     # -> word, pos, supertag
 
@@ -115,6 +118,7 @@ def prepare(
             distinguish_merged_fallback_subtypes=(
                 distinguish_merged_fallback_subtypes),
             order_relations=order_relations,
+            subtypes=subtypes,
             ):
         sent: list[Token] = []
         for sup, word in zip(sen[2], sen[3]):
