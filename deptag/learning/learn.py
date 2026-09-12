@@ -1358,7 +1358,7 @@ def evaluate_command(
         distinguish_merged_fallback_subtypes=(
             args.deprels.distinguish_merged_fallback_subtypes),
         order_relations=args.deprels.order_relations,
-        subtypes=dep_args.subtypes,
+        subtypes=args.deprels.subtypes,
         )
 
     sup2id = initialize_tag_system(
