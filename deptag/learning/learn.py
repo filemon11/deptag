@@ -1612,7 +1612,7 @@ def evaluate_command(
                 f"{s_name}_acc k={k}:", s_dev_accs)
 
     assert eval_labels is not None
-    eval_metric: float = get_eval_metric(
+    eval_metric: float = evaluate.get_eval_metric(
         args.tagging.eval_metric,
         args.tagging.factorised,
         args.tagging.deprels_from_supertags,
