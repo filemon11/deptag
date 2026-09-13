@@ -711,23 +711,37 @@ def train_command(
                             list(factorised_losses.values())).mean()
                         losses["sup"] = sup_loss
 
-                    primary_loss_names = {"arc"}
-                    if "a*" in tagging_settings.eval_metric:
+                    primary_loss_names: set[str] = set()
+                    if tagging_settings.train_arc:
+                        primary_loss_names.add("arc")
+                    if (
+                            "a*" in tagging_settings.eval_metric
+                            and tagging_settings.train_sup
+                            ):
                         primary_loss_names.add("sup")
 
                     if (
-                            tagging_settings.eval_metric == "mst-las"
-                            or (
-                                not tagging_settings.deprels_from_supertags
-                                and "uas" not in tagging_settings.eval_metric)):
+                            tagging_settings.train_deprel and (
+                                tagging_settings.eval_metric == "mst-las"
+                                or (
+                                    not tagging_settings.deprels_from_supertags
+                                    and "uas"
+                                    not in tagging_settings.eval_metric))):
                         primary_loss_names.add("deprel")
 
                     if (
-                            dep_settings.merged is not None
-                            and len(dep_settings.merged) > 0
-                            and "a*" in tagging_settings.eval_metric
-                            and tagging_settings.deprels_from_supertags):
+                            tagging_settings.train_pos and (
+                                dep_settings.merged is not None
+                                and len(dep_settings.merged) > 0
+                                and "a*" in tagging_settings.eval_metric
+                                and tagging_settings.deprels_from_supertags)):
                         primary_loss_names.add("pos")
+
+                    if len(
+                            primary_loss_names
+                            ) == 0 and tagging_settings.train_sup:
+                        # Supertagging setting
+                        primary_loss_names.add("sup")
 
                     auxiliary_loss_names = set(
                         losses.keys()) - primary_loss_names
@@ -1345,7 +1359,7 @@ def evaluate_command(
     print("Evaluation Args", args)
     prefix: str = args.file.conllu_file
 
-    test_reader = data.load_conllu(prefix, "test", dir=data_path)
+    test_reader = data.load_conllu(prefix, args.file.split, dir=data_path)
     test_data = extraction.prepare(
         test_reader,
         arguments=args.deprels.arguments,
@@ -1611,43 +1625,50 @@ def evaluate_command(
             print(
                 f"{s_name}_acc k={k}:", s_dev_accs)
 
-    assert eval_labels is not None
-    eval_metric: float = evaluate.get_eval_metric(
-        args.tagging.eval_metric,
-        args.tagging.factorised,
-        args.tagging.deprels_from_supertags,
-        combined_acc=0,
-        sup_predictions=predictions,
-        arc_predictions=arc_predictions,
-        pos_predictions=(
-            pos_predictions if args.deprels.merged is not None
-            and len(args.deprels.merged) > 0 else None),
-        deprel_predictions=deprel_predictions,
-        factorised_predictions=factorised_predictions,
-        seen_supertag_logps=seen_supertag_logps,
-        eval_sup_labels=eval_labels,
-        eval_arc_labels=eval_arc_labels,
-        eval_deprel_labels=eval_deprel_labels,
-        id2pos=id2pos,
-        id2deprel=id2deprel,
-        deprel2id=eval_dataset.deprel_dict,
-        id2sup=id2sup,
-        sup2id=sup2id,
-        id2sup_relative=id2sup_relative,
-        valid_id2sup=valid_id2sup,
-        valid_id2sup_relative=valid_id2sup_relative,
-        valid_factors=valid_factors,
-        max_l=max_l,
-        max_r=max_r,
-        k_supertag=args.tagging.k_supertag,
-        k_head_scores=args.tagging.k_head_scores,
-        t_arc=t_arc,
-        t_sup=t_sup,
-        sup_score_scale=args.tagging.sup_score_scale,
-    )
+    assert args.tagging.eval_metric is not None
+    eval_metrics: tuple[settings.EvalMetric, ...] = (args.tagging.eval_metric,)
+    if "a*" in args.tagging.eval_metric:
+        eval_metrics = ("a*-las", "a*-uas")
+    elif "mst" in args.tagging.eval_metric:
+        eval_metrics = ("mst-las", "mst-uas")
 
-    print(
-        f"eval metric {args.tagging.eval_metric}:", eval_metric)
+    for metric_name in eval_metrics:
+        eval_metric: float = evaluate.get_eval_metric(
+            metric_name,
+            args.tagging.factorised,
+            args.tagging.deprels_from_supertags,
+            combined_acc=0,
+            sup_predictions=predictions,
+            arc_predictions=arc_predictions,
+            pos_predictions=(
+                pos_predictions if args.deprels.merged is not None
+                and len(args.deprels.merged) > 0 else None),
+            deprel_predictions=deprel_predictions,
+            factorised_predictions=factorised_predictions,
+            seen_supertag_logps=seen_supertag_logps,
+            eval_sup_labels=eval_labels,
+            eval_arc_labels=eval_arc_labels,
+            eval_deprel_labels=eval_deprel_labels,
+            id2pos=id2pos,
+            id2deprel=id2deprel,
+            deprel2id=eval_dataset.deprel_dict,
+            id2sup=id2sup,
+            sup2id=sup2id,
+            id2sup_relative=id2sup_relative,
+            valid_id2sup=valid_id2sup,
+            valid_id2sup_relative=valid_id2sup_relative,
+            valid_factors=valid_factors,
+            max_l=max_l,
+            max_r=max_r,
+            k_supertag=args.tagging.k_supertag,
+            k_head_scores=args.tagging.k_head_scores,
+            t_arc=t_arc,
+            t_sup=t_sup,
+            sup_score_scale=args.tagging.sup_score_scale,
+        )
+
+        print(
+            f"eval metric {metric_name}:", eval_metric)
 
 
 def predict_command(

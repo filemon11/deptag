@@ -205,21 +205,26 @@ class ModelForTagging(nn.Module):
                 self.sup_mix_proj = get_mix_proj(self.num_sup_tags)
 
         # # Biaffine model
-        self.biaffine_mix = mixers.MixedBiaffine(
-            config.num_hidden_layers,
-            transformer_input_dim,
-            config.hidden_size,
-            config.task_specific_params["mlp_arc_hidden"],
-            config.task_specific_params["mlp_lab_hidden"],
-            config.task_specific_params["deprel_num"],
-            config.task_specific_params["train_arc"],
-            config.task_specific_params["mlp_arc_hidden"] is not None,
-            config.task_specific_params["train_subtypes"],
-            config.task_specific_params["extra_num_labels"],
-            config.task_specific_params["mix_drop"],
-            config.task_specific_params["arc_drop"],
-            config.task_specific_params["deprel_drop"],
-        )
+        self.biaffine_mix = None
+        if (
+                config.task_specific_params["train_arc"]
+                or config.task_specific_params["mlp_arc_hidden"] is not None
+                or config.task_specific_params["train_subtypes"]):
+            self.biaffine_mix = mixers.MixedBiaffine(
+                config.num_hidden_layers,
+                transformer_input_dim,
+                config.hidden_size,
+                config.task_specific_params["mlp_arc_hidden"],
+                config.task_specific_params["mlp_lab_hidden"],
+                config.task_specific_params["deprel_num"],
+                config.task_specific_params["train_arc"],
+                config.task_specific_params["mlp_arc_hidden"] is not None,
+                config.task_specific_params["train_subtypes"],
+                config.task_specific_params["extra_num_labels"],
+                config.task_specific_params["mix_drop"],
+                config.task_specific_params["arc_drop"],
+                config.task_specific_params["deprel_drop"],
+            )
 
         # Label smoothing
         self.pos_label_smoothing = config.task_specific_params[
@@ -280,9 +285,14 @@ class ModelForTagging(nn.Module):
             for feat, proj in self.feats_mixes_proj.items()
         }
 
-        S_arc, S_lab, S_extra_lab, word_mask = self.biaffine_mix(
-            hidden_states, word_end_positions
-        )
+        S_arc = None
+        S_lab = None
+        S_extra_lab = {}
+        word_mask = None
+        if self.biaffine_mix is not None:
+            S_arc, S_lab, S_extra_lab, word_mask = self.biaffine_mix(
+                hidden_states, word_end_positions
+            )
 
         return TaggingLogits(
             sup=sup_logits,

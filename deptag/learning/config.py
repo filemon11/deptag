@@ -106,7 +106,7 @@ def generate_config(
         # round(2 * num_encoder_layers / 3),
         "parse_layer": num_encoder_layers,
 
-        "train_arc": True,
+        "train_arc": train_arc,
         "train_pos": train_pos,
         "train_xpos": train_xpos,
 
