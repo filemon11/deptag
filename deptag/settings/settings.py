@@ -122,6 +122,7 @@ class TaggingSettings:
     arc_hidden: int = 500
     deprel_hidden: int = 100
     compile: bool = True
+    seed: int = 1
 
 
 @dataclasses.dataclass(frozen=True)

@@ -17,7 +17,7 @@ SELECTION = (
     "Catalan-AnCora",
     "Czech-PDT",
     "German-GSD",
-    "English-Atis",
+    "English-EWT",
     "Spanish-AnCora",
     "French-GSD",
     "Italian-ISDT",
@@ -59,7 +59,8 @@ for corpus in SELECTION:
         deprels[deprel_name] += deprel_count
 
 
-lines = [f'<dep name="{name}">{count}</dep>' for name, count in deprels.items()]
+lines = [
+    f'<dep name="{name}">{count}</dep>' for name, count in deprels.items()]
 with open(GOAL_DIR / "stats.xml", "w") as f:
     f.write(
         f"""<?xml version="1.0" encoding="UTF-8"?>

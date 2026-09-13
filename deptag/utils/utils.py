@@ -1,4 +1,7 @@
 import numpy as np
+import torch
+import sys
+import random
 
 
 def softmax(x):
@@ -22,3 +25,12 @@ def neg_log10_softmax(x: np.ndarray) -> np.ndarray:
     )
 
     return (logsumexp - x) / np.log(10.0)
+
+
+def set_seed(seed, verbose: bool = False):
+    # Set random seed
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    if verbose:
+        print('Random seed: {}'.format(seed), file=sys.stderr)

@@ -244,6 +244,9 @@ class Statistics():
     gap_counts: Counter[int]
     gap_counts_initial: Counter[int]
     gap_counts_adjunct: Counter[int]
+    num_sent: int
+    perc_unproj_sent: float
+    perc_unproj_sent_no_adj: float
     gap_counts_without_adj: Counter[int] | None = None
 
     def __add__(self, other: "Statistics") -> "Statistics":
@@ -322,6 +325,21 @@ class Statistics():
         gap_counts_initial = self.gap_counts_initial + other.gap_counts_initial
         gap_counts_adjunct = self.gap_counts_adjunct + other.gap_counts_adjunct
 
+        num_sent = self.num_sent + other.num_sent
+
+        self_num_unproj_sent = self.num_sent*self.perc_unproj_sent
+        other_num_unproj_sent = other.num_sent*other.perc_unproj_sent
+        num_unproj_sent = self_num_unproj_sent + other_num_unproj_sent
+        perc_unproj_sent = num_unproj_sent / num_sent
+
+        self_num_unproj_sent_no_adj = (
+            self.num_sent*self.perc_unproj_sent_no_adj)
+        other_num_unproj_sent_no_adj = (
+            other.num_sent*other.perc_unproj_sent_no_adj)
+        num_unproj_sent_no_adj = (
+            self_num_unproj_sent_no_adj + other_num_unproj_sent_no_adj)
+        perc_unproj_sent_no_adj = num_unproj_sent_no_adj / num_sent
+
         return Statistics(
             num_supertags=len(supertags),
             supertags=supertags,
@@ -349,7 +367,10 @@ class Statistics():
             num_strict_right_adjuncts=num_strict_right_adjuncts,
             gap_counts=gap_counts,
             gap_counts_adjunct=gap_counts_adjunct,
-            gap_counts_initial=gap_counts_initial
+            gap_counts_initial=gap_counts_initial,
+            num_sent=num_sent,
+            perc_unproj_sent=perc_unproj_sent,
+            perc_unproj_sent_no_adj=perc_unproj_sent_no_adj,
         )
 
 
@@ -364,11 +385,11 @@ def print_statistics(statistics: Statistics):
         f"{statistics.num_unicorns}")
     print(
         "-> % of supertags:",
-        statistics.perc_unicorn
+        statistics.perc_unicorn*100
     )
     print(
         "-> % of instances:",
-        statistics.perc_instances_unicorn
+        statistics.perc_instances_unicorn*100
     )
     print(
         "# initial trees:",
@@ -415,21 +436,33 @@ def print_statistics(statistics: Statistics):
         statistics.num_strict_right_adjuncts
     )
     print(
-            "gap counts:",
-            statistics.gap_counts
+        "gap counts:",
+        statistics.gap_counts
         )
     print(
-            "gap counts with adjuncts as gaps:",
-            statistics.gap_counts_without_adj
+        "gap counts with adjuncts as gaps:",
+        statistics.gap_counts_without_adj
         )
     print(
-            "gap counts adjunct:",
-            statistics.gap_counts_adjunct
+        "gap counts adjunct:",
+        statistics.gap_counts_adjunct
         )
     print(
-            "gap counts initial:",
-            statistics.gap_counts_initial
+        "gap counts initial:",
+        statistics.gap_counts_initial
         )
+    print(
+        "# sentences:",
+        statistics.num_sent
+    )
+    print(
+        "% of unprojective sentences:",
+        statistics.perc_unproj_sent*100
+    )
+    print(
+        "% of unprojective sentences not caused by  adjunct supertags:",
+        statistics.perc_unproj_sent_no_adj*100
+    )
 
 
 def extract(
@@ -469,6 +502,10 @@ def extract(
             for deprel in deprel_list:
                 deprel_to_new[deprel] = new
 
+    num_sentences: int = 0
+    num_unproj_sentence: int = 0
+    num_unproj_sentence_no_adj: int = 0
+
     for sentence in tqdm.tqdm(
             sentences, desc="Extracting supertags"):
         constituents = projectiveness.find_constituents(sentence.to_tree())
@@ -497,6 +534,7 @@ def extract(
         gap_counts_without_adj += projectiveness.count_gap_numbers(
             constituents_without_adj.values())
 
+        id_to_sup: dict[int, str] = {}
         sentence_iter = iter(sentence)
         for i, string in enumerate(string_relations, start=1):
             if "-" in string:
@@ -515,6 +553,7 @@ def extract(
                 token["misc"]["supertag"] = string
             else:
                 token["misc"] = {"supertag": string}
+            id_to_sup[token["id"]] = string
 
             # Associate supertags with word dict
             word_to_supertag_to_nums[token["form"]][string] += 1
@@ -525,6 +564,18 @@ def extract(
             #     deprel_to_new,
             #     merged_fallback_subtypes,
             #     distinguish_merged_fallback_subtypes)
+
+        tree = sentence.to_tree()
+        ids = set([token["id"] for token in sentence])
+        ignore_ids = set(range(min(ids), max(ids)+1)) - ids
+        id2idproj = get_token2idproj(tree, id_to_sup, ignore_ids)
+        is_proj = id2idproj[tree.token["id"]][1]
+        is_proj_no_adj = id2idproj[tree.token["id"]][2]
+        num_sentences += 1
+        if not is_proj:
+            num_unproj_sentence += 1
+        if not is_proj_no_adj:
+            num_unproj_sentence_no_adj += 1
 
         relative_tags |= set(relative_relations)
         for rel in relative_relations:
@@ -557,7 +608,9 @@ def extract(
     labels = {
         rel[1] for tag in relative_tags for rel in tag if not rel[1] == ""}
     avg_occurrences_per_label = sum(
-        occurrences_per_label.values()) / len(occurrences_per_label)
+        occurrences_per_label.values()) / (
+            len(occurrences_per_label) if len(
+                occurrences_per_label) > 0 else 1)
 
     avg_left_args = sum(
         [tag.split("*")[0].count("+") for tag in supertag_to_nums.keys()]
@@ -583,6 +636,9 @@ def extract(
         tag for tag in supertag_to_nums.keys()
         if "-" in tag.split("*")[0].split("+")[0]
     ])
+
+    perc_unproj_sent = num_unproj_sentence/num_sentences
+    perc_unproj_sent_no_adj = num_unproj_sentence_no_adj/num_sentences
 
     return Statistics(
         supertag_to_nums=supertag_to_nums,
@@ -613,6 +669,9 @@ def extract(
         gap_counts_adjunct=gap_counts_adjunct,
         gap_counts_initial=gap_counts_initial,
         gap_counts_without_adj=gap_counts_without_adj,
+        num_sent=num_sentences,
+        perc_unproj_sent=perc_unproj_sent,
+        perc_unproj_sent_no_adj=perc_unproj_sent_no_adj,
     )
 
 
@@ -810,6 +869,60 @@ def get_lr_argnum(tag: ProjectiveTag) -> tuple[int, int]:
     return l_args, r_args
 
 
+def is_contiguous(ids: set[int], ignore_ids: set[int] = set()) -> bool:
+    if len(set(range(min(ids), max(ids)+1)) - ids - ignore_ids) > 0:
+        return False
+    return True
+
+
+def get_token2idproj(
+        tree: conllu.TokenTree,
+        string_relations: Mapping[int, str],
+        ignore_ids: set[int] = set()) -> dict[
+        int, tuple[set[int], bool, bool]]:
+    mapping: dict[
+        int, tuple[set[int], bool, bool]] = {}
+    for child in tree.children:
+        mapping |= get_token2idproj(
+            child, string_relations, ignore_ids)
+
+    current_id: int = tree.token["id"]
+    proj: bool = True
+    proj_no_adj: bool = True
+    child_ids: set[int] = set(mapping.keys())
+    ids = {current_id} | child_ids
+    if len(mapping) > 0:
+        if not all([t[1] for t in mapping.values()]):
+            proj = False
+        if not is_contiguous(ids, ignore_ids):
+            proj = False
+            proj_no_adj = False
+        for d_tree in tree.children:
+            d_id = d_tree.token["id"]
+            if not mapping[d_id][2]:
+                if (
+                    (
+                        "-" in string_relations[
+                            d_id].split("*")[1].split("+")[-1]
+                        or "-" in string_relations[
+                            d_id].split("*")[0].split("+")[0])
+                    and all(
+                        [mapping[
+                            d_d.token["id"]][2] for d_d in d_tree.children])
+                        ):
+                    d_ids = mapping[d_id][0]
+                    if not is_contiguous(
+                            {i for i in ids if i >= min(
+                                d_ids) and i <= max(d_ids)},
+                            ignore_ids=ignore_ids):
+                        proj_no_adj = False
+                else:
+                    proj_no_adj = False
+
+    mapping[current_id] = (ids, proj, proj_no_adj)
+    return mapping
+
+
 def read(
         sentences: Iterable[conllu.TokenList],
         *,
@@ -831,6 +944,10 @@ def read(
     gap_counts: Counter[int] = Counter()
     gap_counts_initial: Counter[int] = Counter()
     gap_counts_adjunct: Counter[int] = Counter()
+
+    num_unproj_sentence: int = 0
+    num_unproj_sentence_no_adj: int = 0
+    num_sentences: int = 0
 
     for sentence in tqdm.tqdm(
             sentences, desc="Extracting supertags"):
@@ -864,6 +981,7 @@ def read(
                 if tag[1] != "":
                     occurrences_per_label[tag[1]] += 1
 
+        id_to_sup: dict[int, str] = {}
         sentence_iter = iter(sentence)
         for i, string in enumerate(string_relations, start=1):
             if "-" in string:
@@ -879,9 +997,22 @@ def read(
             while isinstance(token["id"], tuple):
                 token = next(sentence_iter)
             token["misc"]["supertag"] = string
+            id_to_sup[token["id"]] = string
 
             # Associate supertags with word dict
             word_to_supertag_to_nums[token["form"]][string] += 1
+
+        ids = set([token["id"] for token in sentence])
+        ignore_ids = set(range(min(ids), max(ids)+1)) - ids
+        tree = sentence.to_tree()
+        id2idproj = get_token2idproj(tree, id_to_sup, ignore_ids)
+        is_proj = id2idproj[tree.token["id"]][1]
+        is_proj_no_adj = id2idproj[tree.token["id"]][2]
+        num_sentences += 1
+        if not is_proj:
+            num_unproj_sentence += 1
+        if not is_proj_no_adj:
+            num_unproj_sentence_no_adj += 1
 
         yield (relative_relations, string_relations, sentence)
 
@@ -933,6 +1064,9 @@ def read(
         if "-" in tag.split("*")[0].split("+")[0]
     ])
 
+    perc_unproj_sent = num_unproj_sentence/num_sentences
+    perc_unproj_sent_no_adj = num_unproj_sentence_no_adj/num_sentences
+
     return Statistics(
         supertag_to_nums=supertag_to_nums,
         supertags=set(supertag_to_nums.keys()),
@@ -961,6 +1095,9 @@ def read(
         gap_counts=gap_counts,
         gap_counts_adjunct=gap_counts_adjunct,
         gap_counts_initial=gap_counts_initial,
+        num_sent=num_sentences,
+        perc_unproj_sent=perc_unproj_sent,
+        perc_unproj_sent_no_adj=perc_unproj_sent_no_adj,
     )
 
 

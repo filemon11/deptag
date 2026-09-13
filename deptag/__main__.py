@@ -1,25 +1,12 @@
 import argparse
 import logging
-import random
-import sys
-
-import numpy as np
-import torch
 import pathlib
 
-from . import learning, extraction, data, settings
+from . import learning, extraction, data, settings, utils
 
 from typing import Collection
 
 SETTINGS_NAME = "default"
-
-
-# Set random seed
-RANDOM_SEED = 1
-torch.manual_seed(RANDOM_SEED)
-random.seed(RANDOM_SEED)
-np.random.seed(RANDOM_SEED)
-print('Random seed: {}'.format(RANDOM_SEED), file=sys.stderr)
 
 
 logging.basicConfig(
@@ -178,13 +165,33 @@ def extract_func(sett: settings.ExtractSettings):
     # extraction.print_statistics(stat2)
 
     # setts1 = [
-        # settings.load_settings(settings_name=f"English-{name}")
-        # for name in (
-        #     "EWT",
-        #     "Atis", "CHILDES", "GUM",
-        #     "LinES", "ParTUT", "GUMReddit", "ESLSpok"
-        #     ) if not print(name)
+    #     settings.load_settings("extract", settings_name=f"English-{name}")
+    #     for name in (
+    #         # "EWT",
+    #         # "Atis", "GUM",
+    #         # "LinES", "ParTUT", "GUMReddit", "ESLSpok"
+    #         ) if not print(name)
     # ]
+
+    setts1 = [
+            settings.load_settings("extract", settings_name=name)
+            for name in (
+                # "Bulgarian-BTB",
+                # "Catalan-AnCora",
+                # "Czech-PDT",
+                # "German-GSD",
+                # "English-EWT",
+                # "Spanish-AnCora",
+                # "French-GSD",
+                # "Italian-ISDT",
+                # "Dutch-Alpino",
+                # "Norwegian-Bokmaal",
+                # "Romanian-RRT",
+                # "Russian-SynTagRus",
+                "combined",
+                ) if not print(name)
+        ]
+
     # setts2 = [
     #     settings.load_settings(settings_name=f"French-{name}")
     #     for name in (
@@ -194,36 +201,42 @@ def extract_func(sett: settings.ExtractSettings):
     #         ) if not print(name)
     # ]
 
-    # stat = extract_multiple(
-    #     setts1 + setts2, replace_labels_in_unicorns=False,
-    #     replacement_threshold=0, plot_unicorn_sentences=True)
+    stat = extract_multiple(
+        setts1, replace_labels_in_unicorns=False,
+        replacement_threshold=0, plot_unicorn_sentences=True)
+    extraction.print_statistics(stat)
+    # print(stat.supertags)
+    # print(stat.supertag_to_nums)
     # TODO: put replace_labels in unicorns and replacement_threshold in
     # meta settings
 
-    stat_dict: dict[str, extraction.Statistics] = {}
-    for corpus in (
-            "Bulgarian-BTB",
-            "Catalan-AnCora",
-            "Czech-PDT",
-            "German-GSD",
-            "English-EWT",
-            "Spanish-AnCora",
-            "French-GSD",
-            "Italian-ISDT",
-            "Dutch-Alpino",
-            "Norwegian-Bokmaal",
-            "Romanian-RRT",
-            "Russian-SynTagRus",
-            # "combined",
-            ):
-        print("Processing corpus:", corpus)
-        sett = settings.load_settings("extract", settings_name=corpus)
-        stat = extract_multiple(
-            (sett,), replace_labels_in_unicorns=False,
-            replacement_threshold=0, plot_unicorn_sentences=True)
-        stat_dict[corpus] = stat
-        extraction.print_statistics(stat)
-        print(stat.supertags)
+    # stat_dict: dict[str, extraction.Statistics] = {}
+    # for corpus in (
+    #         # "Bulgarian-BTB",
+    #         # "Catalan-AnCora",
+    #         # "Czech-PDT",
+    #         # "German-GSD",
+    #         # "English-EWT",
+    #         # "Spanish-AnCora",
+    #         # "French-GSD",
+    #         # "Italian-ISDT",
+    #         # "Dutch-Alpino",
+    #         # "Norwegian-Bokmaal",
+    #         # "Romanian-RRT",
+    #         # "Russian-SynTagRus",
+    #         # "combined",
+    #         ):
+        # print("Processing corpus:", corpus)
+        # sett = settings.load_settings("extract", settings_name=corpus)
+
+    # corpus = sett.file.conllu_file
+    # if True:
+    #     stat = extract_multiple(
+    #         (sett,), replace_labels_in_unicorns=False,
+    #         replacement_threshold=0, plot_unicorn_sentences=True)
+    #     stat_dict[corpus] = stat
+    #     extraction.print_statistics(stat)
+    #     print(stat.supertags)
 
 
 if __name__ == "__main__":
@@ -231,6 +244,7 @@ if __name__ == "__main__":
 
     if args.command == 'train':
         sett = settings.load_settings("full", args.settings)
+        utils.set_seed(sett.tagging.seed, verbose=True)
         for _ in learning.train_command(sett):
             continue
     elif args.command == 'evaluate':
@@ -247,6 +261,7 @@ if __name__ == "__main__":
         extract_func(sett_extr)
     elif args.command == "opt":
         sett_opt = settings.load_settings("opt", args.settings)
-        learning.optimise(sett_opt, RANDOM_SEED)
+        utils.set_seed(sett_opt.tagging.seed, verbose=True)
+        learning.optimise(sett_opt)
     else:
         raise Exception(f"Option {args.command} unknown.")

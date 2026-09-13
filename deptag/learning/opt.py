@@ -1,4 +1,4 @@
-from . import learn
+from . import learn, utils
 from .. import settings
 from ..settings import validation
 import torch
@@ -142,8 +142,6 @@ def sample(
     )
 
 
-# TODO: CHECK whether I have to save the model to resume pruner
-
 class Objective:
     def __init__(
             self,
@@ -186,6 +184,9 @@ class Objective:
             validation.assert_tagging_settings(
                     tagging_settings
                 )
+            seed = tagging_settings.seed + trial.number
+            utils.set_seed(seed)
+
             file_settings = self.args.file
             dep_settings = self.args.deprels
 
@@ -215,7 +216,7 @@ class Objective:
             return max(results)
 
 
-def optimise(args: settings.OptSettings, seed: int = 1):
+def optimise(args: settings.OptSettings):
     pruner_path = f"{args.opt_path}/{args.study_name}_pruner.pkl"
     if args.tagging.mode == "continue" and os.path.exists(
             pruner_path):
@@ -236,7 +237,7 @@ def optimise(args: settings.OptSettings, seed: int = 1):
         sampler = optuna.samplers.TPESampler(
             n_startup_trials=args.sampler_n_startup_trials,
             n_ei_candidates=args.sampler_n_ei_candidates,
-            seed=seed,
+            seed=args.tagging.seed,
             multivariate=args.sampler_multivariate,
         )
     # group not needed due to no tree-structured sampling space
