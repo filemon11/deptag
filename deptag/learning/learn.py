@@ -1352,14 +1352,19 @@ def _finish_training(
 def evaluate_command(
         args: settings.Settings, k: int = 1,
         device: torch.types.Device = torch.device(
-            'cuda' if torch.cuda.is_available() else 'cpu')):
+            'cuda' if torch.cuda.is_available() else 'cpu'),
+        overwrite_split: settings.Split | None = None):
     data_path: pathlib.Path = pathlib.Path(
         args.file.data_folder)
 
     print("Evaluation Args", args)
     prefix: str = args.file.conllu_file
 
-    test_reader = data.load_conllu(prefix, args.file.split, dir=data_path)
+    split = args.file.split
+    if overwrite_split is not None:
+        split = overwrite_split
+
+    test_reader = data.load_conllu(prefix, split, dir=data_path)
     test_data = extraction.prepare(
         test_reader,
         arguments=args.deprels.arguments,

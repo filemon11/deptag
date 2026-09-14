@@ -48,6 +48,7 @@ class FileSettings:
     conllu_file: str
     output_file: str
     split: None | Split = None
+    splits: list[str] | None = None
     standard: str = "default"
     standards_dir: str = str(standards.STANDARDS_DIR)
     standard_from_xml: bool = False

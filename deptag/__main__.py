@@ -1,6 +1,7 @@
 import argparse
 import logging
 import pathlib
+import dataclasses
 
 from . import learning, extraction, data, settings, utils
 
@@ -249,7 +250,11 @@ if __name__ == "__main__":
             continue
     elif args.command == 'evaluate':
         sett = settings.load_settings("full", args.settings)
-        learning.evaluate_command(sett, args.k)
+        splits = sett.file.splits
+        if splits is not None:
+            for split in splits:
+                learning.evaluate_command(
+                    sett, args.k, overwrite_split=split)  # type: ignore
     elif args.command == 'predict':
         sett = settings.load_settings("full", args.settings)
         learning.predict_command(sett)
