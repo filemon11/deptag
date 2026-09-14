@@ -368,6 +368,11 @@ def predict(
                 gold_heads.int().cpu().numpy()
             )
 
+        max_parse_len = max(
+            max_parse_len,
+            batch["heads"].shape[1]+1,
+        )
+
         s_preds, s_labels = deprel_func(
             deprels_from_pred_head,
             deprels_matrix,
