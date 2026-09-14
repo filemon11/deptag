@@ -255,6 +255,9 @@ if __name__ == "__main__":
             for split in splits:
                 learning.evaluate_command(
                     sett, args.k, overwrite_split=split)  # type: ignore
+        else:
+            learning.evaluate_command(
+                sett, args.k)
     elif args.command == 'predict':
         sett = settings.load_settings("full", args.settings)
         learning.predict_command(sett)
