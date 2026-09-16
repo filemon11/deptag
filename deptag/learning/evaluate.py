@@ -1070,7 +1070,7 @@ def get_eval_metric(
             #     eval_metric = 0
             #     tol = 99999
 
-        case "mst-las" | "mst-uas" | "mst-lm", "mst-um":
+        case "mst-las" | "mst-uas" | "mst-lm" | "mst-um":
             assert arc_predictions is not None
             assert eval_arc_labels is not None
 
