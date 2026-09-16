@@ -2776,7 +2776,7 @@ def process(
     (
         ma, ig, supertag_scores, predicted_pos,
         deprel2id, id2sup_relative, id2pos, root_sup_id, max_l, max_r,
-        k_head_scores, k_supertag, t_arc) = inp
+        k_head_scores, k_supertag, t_arc, do_fallback) = inp
     ignore = ig == -1
     word_ignore = ignore[1:]
 
@@ -2829,9 +2829,16 @@ def process(
         estimate_type="simple")
     result = system.run(printinfo=False)
 
+    found_result = True
     if result is None:
+        found_result = False
         # print("FALLBACK")
-        backtracked = system.fallback_backtrack()
+        if do_fallback:
+            backtracked = system.fallback_backtrack()
+        else:
+            length = supertag_scores.shape[0]
+            backtracked = ([0]*length, [1]*length, [0]*length, ["dep"]*length)
+
         # projective = is_projective(ma.argmax(-1))
         # if projective:
         #     raise Exception("Fallback for projective sentence.")
@@ -2907,7 +2914,7 @@ def process(
     deprels_ = np.full((pad_len,), 0)
     deprels_[~ignore] = deprel_result
 
-    return heads, deprels_
+    return heads, deprels_, found_result
 
 
 def is_projective(heads):
@@ -3080,6 +3087,7 @@ def chart(
         k_head_scores: int = 10,
         t_arc: float = 1,
         sup_score_scale: float = 1.0,
+        do_fallback: bool = True
         ) -> tuple[np.ndarray, np.ndarray]:
 
     start = timer()
@@ -3104,13 +3112,15 @@ def chart(
                 itertools.repeat(max_r),
                 itertools.repeat(k_head_scores),
                 itertools.repeat(k_supertag),
-                itertools.repeat(t_arc))),  # [22:23],
+                itertools.repeat(t_arc),
+                itertools.repeat(do_fallback))),  # [22:23],
             desc="Chart parsing",
             total=score_matrix.shape[0]),
         chunksize=chunksize)
 
     end = timer()
     print("Chart took", timedelta(seconds=end-start), "seconds")
+    print("Found result:", sum([s[2] for s in stack]), "of", len(stack))
 
     return np.stack([s[0] for s in stack]), np.stack([s[1] for s in stack])
 

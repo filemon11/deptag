@@ -151,7 +151,9 @@ def predict(
         tagging_model: model.ModelForTagging, eval_dataloader, dataset_size,
         num_tags, batch_size, device: torch.types.Device,
         report_loss: Literal[True], deprels_from_pred_head: bool = False,
-        deprels_matrix: bool = False
+        deprels_matrix: bool = False,
+        gold_arc: bool = False,
+        gold_sup: bool = False,
         ) -> tuple[
             np.ndarray | None, np.ndarray | None,
             np.ndarray | None, np.ndarray | None,
@@ -177,7 +179,10 @@ def predict(
         num_tags, batch_size, device: torch.types.Device = torch.device(
             'cuda' if torch.cuda.is_available() else 'cpu'),
         report_loss: Literal[False] = False,
-        deprels_from_pred_head: bool = False, deprels_matrix: bool = False
+        deprels_from_pred_head: bool = False,
+        deprels_matrix: bool = False,
+        gold_arc: bool = False,
+        gold_sup: bool = False,
         ) -> tuple[
             np.ndarray | None, np.ndarray | None,
             np.ndarray | None, np.ndarray | None,
@@ -204,6 +209,8 @@ def predict(
             'cuda' if torch.cuda.is_available() else 'cpu'),
         report_loss: bool = False, deprels_from_pred_head: bool = False,
         deprels_matrix: bool = False,
+        gold_arc: bool = False,
+        gold_sup: bool = False,
         ) -> tuple[
             np.ndarray | None, np.ndarray | None,
             np.ndarray | None, np.ndarray | None,
@@ -262,7 +269,8 @@ def predict(
 
         with torch.no_grad(), torch.amp.autocast(
                 device.type,
-                enabled=True, dtype=torch.float16
+                enabled=True,
+                dtype=torch.float16
                 ):
 
             logits: model.TaggingLogits
@@ -276,7 +284,15 @@ def predict(
 
         idx += 1
         if logits["sup"] is not None:
-            sup_logits = logits["sup"].float().cpu().numpy()
+            if gold_sup:
+                sup_logits = np.full(logits["sup"].shape, -np.inf)
+                indices = [
+                    (b, i, e) for b, r in enumerate(
+                        batch['labels'].int().cpu().numpy())
+                    for i, e in enumerate(r)]
+                sup_logits[*list(zip(*indices))] = 1
+            else:
+                sup_logits = logits["sup"].float().cpu().numpy()
             max_len = max(max_len, sup_logits.shape[1])
             predictions.append(sup_logits)
         labels = batch['labels'].int().cpu().numpy()
@@ -327,28 +343,12 @@ def predict(
             dependent_mask = parse_mask.clone()
             dependent_mask[:, 0] = False
 
+            # Store arc scores for later evaluation.
             pred_heads = pred_heads.masked_fill(
                 ~dependent_mask,
                 -1,
             )
             # [B, D]
-
-            # Store arc scores for later evaluation.
-            arc_logits_np = (
-                arc_logits
-                .transpose(-1, -2)
-                .float()
-                .cpu()
-                .numpy()
-            )
-            # [B, D, H]
-
-            arc_predictions.append(arc_logits_np)
-
-            max_parse_len = max(
-                max_parse_len,
-                arc_logits_np.shape[1],
-            )
 
             # Gold heads: prepend ignored ROOT dependent.
             root_heads = torch.full(
@@ -364,8 +364,33 @@ def predict(
             )
             # [B, D]
 
+            g_h = gold_heads.int().cpu().numpy()
             eval_heads.append(
-                gold_heads.int().cpu().numpy()
+                g_h
+            )
+
+            if gold_arc:
+                arc_logits_np = np.full(arc_logits.shape, -np.inf)
+                indices = [
+                    (b, i, h) for b, r in enumerate(g_h)
+                    for i, h in enumerate(r)]
+                arc_logits_np[*list(zip(*indices))] = 1
+
+            else:
+                arc_logits_np = (
+                    arc_logits
+                    .transpose(-1, -2)
+                    .float()
+                    .cpu()
+                    .numpy()
+                )
+                # [B, D, H]
+
+            arc_predictions.append(arc_logits_np)
+
+            max_parse_len = max(
+                max_parse_len,
+                arc_logits_np.shape[1],
             )
 
         max_parse_len = max(
@@ -650,11 +675,17 @@ def calc_tag_accuracy(
         predictions, eval_labels, writer, use_tensorboard, step: int,
         typ: Literal["pos", "sup", "arc", "deprel"] = "sup",
         printinfo: bool = True,
+        predictions2: None | np.ndarray = None,
+        eval_labels2: None | np.ndarray = None,
+        correct_sentence: bool = False,
         ) -> float:
 
     acc = calc_tag_accuracy_k(
         predictions, eval_labels, writer, use_tensorboard, step, k=1,
-        typ=typ, printinfo=printinfo
+        typ=typ, printinfo=printinfo,
+        predictions2=predictions2,
+        eval_labels2=eval_labels2,
+        correct_sentence=correct_sentence,
     )
     if use_tensorboard:
         label = ""
@@ -676,17 +707,24 @@ def calc_tag_accuracy(
 
 
 def calc_tag_accuracy_k(
-        predictions, eval_labels, writer, use_tensorboard,
+        predictions: np.ndarray,
+        eval_labels: np.ndarray,
+        writer,
+        use_tensorboard,
         step: int, k: int = 1,
         typ: Literal["sup", "pos", "arc", "deprel"] | str = "sup",
         printinfo: bool = True,
+        predictions2: None | np.ndarray = None,
+        eval_labels2: None | np.ndarray = None,
+        correct_sentence: bool = False,
         ) -> float:
 
-    mask = eval_labels != -1
-    eval_labels = eval_labels[mask]
-    predictions = predictions[mask]
+    mask: np.ndarray = eval_labels != -1
+    if not correct_sentence:
+        eval_labels = eval_labels[mask]
+        predictions = predictions[mask]
 
-    if len(eval_labels) == 0:
+    if not mask.any():
         return float("nan")
 
     n_classes = predictions.shape[-1]
@@ -694,14 +732,55 @@ def calc_tag_accuracy_k(
 
     if k_eff == 1:
         predictions = predictions.argmax(-1)
-        acc = (predictions == eval_labels).mean()
+        if correct_sentence:
+            predictions = predictions.copy()
+            predictions[~mask] = -1
+            # does not inflate metric since all entries in the
+            # sentence need to be correct
+        acc = (predictions == eval_labels)
 
     else:
         predictions = np.argpartition(
             predictions, -k_eff, axis=-1)[..., -k_eff:]
         # predictions = np.top_k(predictions[eval_labels != -1], k=k, dim=-1)
 
-        acc = (predictions == eval_labels[..., None]).any(-1).mean()
+        acc = (predictions == eval_labels[..., None]).any(-1)
+
+    if correct_sentence:
+        acc = acc.all(-1)
+
+    if predictions2 is not None and eval_labels2 is not None:
+        assert predictions2 is not None
+        assert eval_labels2 is not None
+
+        mask2: np.ndarray = eval_labels2 != -1
+        if not correct_sentence:
+            eval_labels2 = eval_labels2[mask2]
+            predictions2 = predictions2[mask2]
+
+        n_classes = predictions2.shape[-1]
+        k_eff = min(k, n_classes)
+
+        if k_eff == 1:
+            predictions2 = predictions2.argmax(-1)
+            if correct_sentence:
+                predictions2 = predictions2.copy()
+                predictions2[~mask2] = -1
+
+            acc2 = (predictions2 == eval_labels2)
+
+        else:
+            predictions2 = np.argpartition(
+                predictions2, -k_eff, axis=-1)[..., -k_eff:]
+
+            acc2 = (predictions2 == eval_labels2[..., None]).any(-1)
+
+        if correct_sentence:
+            acc2 = acc2.all(-1)
+
+        acc = np.logical_and(acc, acc2)
+
+    acc = acc.mean()
 
     if printinfo:
         label = f"{typ}_accuracy"
@@ -715,11 +794,17 @@ def calc_tag_accuracy_upto_k(
             step: int, k: int = 1,
             typ: Literal["sup", "pos", "arc", "deprel"] = "sup",
             printinfo: bool = True,
+            predictions2: None | np.ndarray = None,
+            eval_labels2: None | np.ndarray = None,
+            correct_sentence: bool = False,
         ) -> list[float]:
     accs = [
         calc_tag_accuracy_k(
             predictions, eval_labels, writer, use_tensorboard, step, k=m,
-            typ=typ, printinfo=printinfo
+            typ=typ, printinfo=printinfo,
+            predictions2=predictions2,
+            eval_labels2=eval_labels2,
+            correct_sentence=correct_sentence,
         )
         for m in range(1, k+1)
     ]
@@ -791,7 +876,8 @@ def select_deprel_logits(
 
 def get_eval_metric(
         eval_metric_type: Literal[
-            "cacc", "a*-las", "a*-uas", "mst-las", "mst-uas"],
+            "cacc", "a*-las", "a*-uas", "mst-las", "mst-uas",
+            "a*-um", "a*-lm", "mst-um", "mst-lm"],
         factorised: Literal["complete", "structural", "seen", False],
         deprels_from_supertags: bool,
         combined_acc: float,
@@ -820,13 +906,14 @@ def get_eval_metric(
         t_sup: float = 1,
         t_arc: float = 1,
         sup_score_scale: float = 1.0,
+        do_fallback: bool = True,
         ) -> float:
     eval_metric: float
     match eval_metric_type:
         case "cacc":
             eval_metric = combined_acc
 
-        case "a*-las" | "a*-uas":
+        case "a*-las" | "a*-uas" | "a*-lm" | "a*-um":
             root_supertag = "*+root"
 
             assert arc_predictions is not None
@@ -929,11 +1016,12 @@ def get_eval_metric(
                 k_head_scores=k_head_scores,
                 t_arc=t_arc,
                 sup_score_scale=sup_score_scale,
+                do_fallback=do_fallback,
             )
 
             assert eval_deprel_labels is not None
 
-            if eval_metric_type == "a*-las":
+            if eval_metric_type in ("a*-las", "a*-lm"):
 
                 if not deprels_from_supertags:
                     assert deprel_predictions is not None
@@ -951,25 +1039,38 @@ def get_eval_metric(
                     )
                     # [B, D]
 
-                eval_metric = parsing.las(
-                    head_preds_astar,
-                    deprel_preds_astar,
-                    eval_arc_labels,
-                    eval_deprel_labels,
-                    id2deprel=id2deprel
-                )
+                if eval_metric_type == "a*-las":
+                    eval_metric = parsing.las(
+                        head_preds_astar,
+                        deprel_preds_astar,
+                        eval_arc_labels,
+                        eval_deprel_labels,
+                        id2deprel=id2deprel
+                    )
+                elif eval_metric_type == "a*-lm":
+                    eval_metric = parsing.lm(
+                        head_preds_astar,
+                        deprel_preds_astar,
+                        eval_arc_labels,
+                        eval_deprel_labels,
+                    )
 
-            else:  # a*-uas
+            elif eval_metric_type == "a*-uas":  # a*-uas
                 eval_metric = parsing.uas(
                     head_preds_astar,
                     eval_arc_labels,
                 )
 
+            elif eval_metric_type == "a*-um":
+                eval_metric = parsing.um(
+                    head_preds_astar,
+                    eval_arc_labels,
+                )
             # else:
             #     eval_metric = 0
             #     tol = 99999
 
-        case "mst-las" | "mst-uas":
+        case "mst-las" | "mst-uas" | "mst-lm", "mst-um":
             assert arc_predictions is not None
             assert eval_arc_labels is not None
 
@@ -979,7 +1080,7 @@ def get_eval_metric(
             )
             # mst: [B, D]
 
-            if eval_metric_type == "mst-las":
+            if eval_metric_type in ("mst-las", "mst-lm"):
                 assert deprel_predictions is not None
                 assert eval_deprel_labels is not None
 
@@ -995,15 +1096,28 @@ def get_eval_metric(
                 )
                 # [B, D]
 
-                eval_metric = parsing.las(
-                    mst,
-                    deprel_predictions_mst,
-                    eval_arc_labels,
-                    eval_deprel_labels,
-                )
+                if eval_metric_type == "mst-las":
+                    eval_metric = parsing.las(
+                        mst,
+                        deprel_predictions_mst,
+                        eval_arc_labels,
+                        eval_deprel_labels,
+                    )
+                elif eval_metric_type == "mst-lm":
+                    eval_metric = parsing.lm(
+                        mst,
+                        deprel_predictions_mst,
+                        eval_arc_labels,
+                        eval_deprel_labels,
+                    )
 
-            else:  # mst-uas
+            elif eval_metric_type == "mst-uas":  # mst-uas
                 eval_metric = parsing.uas(
+                    mst,
+                    eval_arc_labels,
+                )
+            elif eval_metric_type == "mst-um":
+                eval_metric = parsing.um(
                     mst,
                     eval_arc_labels,
                 )

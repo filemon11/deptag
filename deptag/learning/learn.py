@@ -221,6 +221,8 @@ def get_accuracies(
     dev_factorised_accs = dict()
     dev_feats_accs = dict()
     dev_subtypes_accs = dict()
+    dev_suparc_acc = None
+    dev_suparc_sent_acc = None
     if k == 1:
         func = evaluate.calc_tag_accuracy_k
     else:
@@ -250,10 +252,23 @@ def get_accuracies(
             sup_predictions, eval_sup_labels, writer,
             use_tensorboard, n_iter,
             typ="sup", k=k, printinfo=printinfo)
-        evaluate.calc_tag_accuracy_upto_k(
+        # evaluate.calc_tag_accuracy_upto_k(
+        #     sup_predictions, eval_sup_labels, writer,
+        #     use_tensorboard, n_iter,
+        #     typ="sup", k=10, printinfo=True)
+    if sup_predictions is not None and arc_predictions is not None:
+        dev_suparc_acc = func(
             sup_predictions, eval_sup_labels, writer,
             use_tensorboard, n_iter,
-            typ="sup", k=10, printinfo=True)
+            typ="sup_and_arc", k=k, printinfo=printinfo,
+            predictions2=arc_predictions,
+            eval_labels2=eval_arc_labels)
+        dev_suparc_sent_acc = func(
+            sup_predictions, eval_sup_labels, writer,
+            use_tensorboard, n_iter,
+            typ="sup_and_arc_sent", k=k, printinfo=printinfo,
+            predictions2=arc_predictions, eval_labels2=eval_arc_labels,
+            correct_sentence=True)
     for f_name, f_predictions in factorised_predictions.items():
         dev_factorised_accs[f_name] = func(
             f_predictions, eval_factorised_labels[f_name],
@@ -282,7 +297,8 @@ def get_accuracies(
     return (
         dev_sup_acc, dev_pos_acc, dev_arc_acc,
         dev_deprel_acc, dev_factorised_accs,
-        dev_xpos_acc, dev_feats_accs, dev_subtypes_accs)
+        dev_xpos_acc, dev_feats_accs, dev_subtypes_accs,
+        dev_suparc_acc, dev_suparc_sent_acc)
 
 
 @dataclasses.dataclass
@@ -956,7 +972,9 @@ def train_command(
                             tagging_model, dev_dataloader, len(dev_dataset),
                             len(sup2id), tagging_settings.batch_size, device,
                             report_loss=True,
-                            deprels_matrix=True)
+                            deprels_matrix=True,
+                            gold_arc=tagging_settings.gold_arc,
+                            gold_sup=tagging_settings.gold_sup,)
                     )
 
                     if tagging_settings.use_tensorboard:
@@ -1030,7 +1048,8 @@ def train_command(
                         dev_sup_acc, dev_pos_acc, dev_arc_acc,
                         dev_deprel_acc, dev_factorised_accs,
                         dev_xpos_acc, dev_feats_accs,
-                        dev_subtypes_accs,) = (
+                        dev_subtypes_accs, dev_suparc_acc,
+                        dev_suparc_sent_acc) = (
                         get_accuracies(
                             writer, n_iter, tagging_settings.use_tensorboard,
                             predictions, eval_labels,
@@ -1137,6 +1156,7 @@ def train_command(
                         t_arc=t_arc,
                         t_sup=t_sup,
                         sup_score_scale=tagging_settings.sup_score_scale,
+                        do_fallback=tagging_settings.do_fallback,
                     )
 
                     writer.add_scalar(
@@ -1302,7 +1322,9 @@ def _finish_training(
         evaluate.predict(
             model, eval_dataloader, len(eval_dataset),
             len(sup2id), args.batch_size,
-            device))
+            device,
+            gold_arc=args.gold_arc,
+            gold_sup=args.gold_sup,))
 
     seen_supertag_logps = None
     if factorised in ("seen", "complete"):
@@ -1326,7 +1348,8 @@ def _finish_training(
         sup_acc, pos_acc, arc_acc,
         deprel_acc, dev_factorised_accs,
         dev_xpos_accs, dev_feats_accs,
-        dev_subtypes_accs,) = (
+        dev_subtypes_accs, dev_suparc_acc,
+        dev_suparc_sent_acc) = (
         get_accuracies(
             writer, n_iter, args.use_tensorboard,
             predictions, eval_labels,
@@ -1383,6 +1406,7 @@ def evaluate_command(
     sup2id = initialize_tag_system(
         prefix, pathlib.Path(args.tagging.tag_vocab_path)
     )
+    print("sups", len(sup2id), args.tagging.tag_vocab_path)
     id2sup = {i: sup for sup, i in sup2id.items()}
     id2sup_relative = {
         i: extraction.convert_string_to_relative_relation(tag)
@@ -1508,7 +1532,9 @@ def evaluate_command(
         evaluate.predict(
             model, eval_dataloader, len(eval_dataset),
             len(sup2id), args.tagging.batch_size, device,
-            deprels_matrix=True)
+            deprels_matrix=True,
+            gold_arc=args.tagging.gold_arc,
+            gold_sup=args.tagging.gold_sup,)
         )
 
     deprel_predictions_ = deprel_predictions
@@ -1559,7 +1585,8 @@ def evaluate_command(
         dev_sup_accs, dev_pos_accs, dev_arc_accs,
         dev_deprel_accs, dev_factorised_accs,
         dev_xpos_accs, dev_feats_accs,
-        dev_subtypes_accs,) = (
+        dev_subtypes_accs, dev_suparc_accs,
+        dev_suparc_sent_accs) = (
         get_accuracies(
             writer, 0, args.tagging.use_tensorboard,
             predictions, eval_labels,
@@ -1603,6 +1630,12 @@ def evaluate_command(
                 print(
                     f"{s_name}_acc k={k}:", s_dev_accs[k-1]
                 )
+            if dev_suparc_accs is not None:
+                print(
+                    f"sup_and_arc_acc k={k}:", dev_suparc_accs[k-1])
+            if dev_suparc_sent_accs is not None:
+                print(
+                    f"sup_and_arc_sent_acc k={k}:", dev_suparc_sent_accs[k-1])
 
     else:
         if dev_sup_accs is not None:
@@ -1629,13 +1662,19 @@ def evaluate_command(
         for s_name, s_dev_accs in dev_subtypes_accs.items():
             print(
                 f"{s_name}_acc k={k}:", s_dev_accs)
+        if dev_suparc_accs is not None:
+            print(
+                f"sup_and_arc_acc k={k}:", dev_suparc_accs)
+        if dev_suparc_sent_accs is not None:
+            print(
+                f"sup_and_arc_sent_acc k={k}:", dev_suparc_sent_accs)
 
     assert args.tagging.eval_metric is not None
     eval_metrics: tuple[settings.EvalMetric, ...] = (args.tagging.eval_metric,)
     if "a*" in args.tagging.eval_metric:
-        eval_metrics = ("a*-las", "a*-uas")
+        eval_metrics = ("a*-uas", "a*-um", "a*-las", "a*-lm")
     elif "mst" in args.tagging.eval_metric:
-        eval_metrics = ("mst-las", "mst-uas")
+        eval_metrics = ("mst-uas", "mst-um", "mst-las", "mst-lm")
 
     for metric_name in eval_metrics:
         eval_metric: float = evaluate.get_eval_metric(
@@ -1670,6 +1709,7 @@ def evaluate_command(
             t_arc=t_arc,
             t_sup=t_sup,
             sup_score_scale=args.tagging.sup_score_scale,
+            do_fallback=args.tagging.do_fallback,
         )
 
         print(

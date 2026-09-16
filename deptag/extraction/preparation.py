@@ -80,6 +80,7 @@ def prepare_train(
         sents.append(sent)
 
     sup2id["-UNK*"] = len(sup2id)
+    print("sup2id", len(sup2id))
     return sents, sup2id
 
 

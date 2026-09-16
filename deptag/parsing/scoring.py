@@ -63,6 +63,29 @@ def las(predicted_heads: np.ndarray, predicted_deprels: np.ndarray,
         predicted_deprels == gold_deprels).mean().item()
 
 
+def lm(
+        predicted_heads: np.ndarray, predicted_deprels: np.ndarray,
+        gold_heads: np.ndarray, gold_deprels: np.ndarray,
+        gold_pos_tags: np.ndarray | None = None,
+        ignore_pos_tag_id: int | None = None,
+        ) -> float:
+
+    if ignore_pos_tag_id is not None:
+        assert gold_pos_tags is not None
+        gold_heads = gold_heads.copy()
+        gold_heads[gold_pos_tags == ignore_pos_tag_id] = -1
+
+    predicted_heads = predicted_heads.copy()
+    predicted_heads[gold_heads == -1] = -1
+    predicted_deprels.copy()
+    predicted_deprels[gold_heads == -1] = -1
+    # does not inflate the metric since the whole sentence needs to be correct
+
+    return np.logical_and(
+        predicted_heads == gold_heads,
+        predicted_deprels == gold_deprels).all(-1).mean().item()
+
+
 def uas(
         predicted_heads: np.ndarray, gold_heads: np.ndarray,
         gold_pos_tags: np.ndarray | None = None,
@@ -79,3 +102,20 @@ def uas(
     gold_heads = gold_heads[gold_heads != -1]
 
     return (predicted_heads == gold_heads).mean().item()
+
+
+def um(
+        predicted_heads: np.ndarray, gold_heads: np.ndarray,
+        gold_pos_tags: np.ndarray | None = None,
+        ignore_pos_tag_id: int | None = None) -> float:
+
+    if ignore_pos_tag_id is not None:
+        assert gold_pos_tags is not None
+        gold_heads = gold_heads.copy()
+        gold_heads[gold_pos_tags == ignore_pos_tag_id] = -1
+
+    predicted_heads = predicted_heads.copy()
+    predicted_heads[gold_heads == -1] = -1
+    # does not inflate the metric since the whole sentence needs to be correct
+
+    return (predicted_heads == gold_heads).all(-1).mean().item()

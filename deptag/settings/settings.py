@@ -16,7 +16,8 @@ Factorised = Literal[
     'seen', False]
 Mode = Literal["init", "continue", "add"]
 EvalMetric = Literal[
-    "cacc", "mst-las", "mst-uas", "a*-las", "a*-uas"]
+    "cacc", "mst-las", "mst-uas", "a*-las", "a*-uas",
+    "mst-lm", "mst-um", "a*-lm", "a*-um"]
 Split = Literal["train", "test", "dev"]
 
 IntOrStr = int | str
@@ -124,6 +125,9 @@ class TaggingSettings:
     deprel_hidden: int = 100
     compile: bool = True
     seed: int = 1
+    gold_arc: bool = False
+    gold_sup: bool = False
+    do_fallback: bool = True
 
 
 @dataclasses.dataclass(frozen=True)

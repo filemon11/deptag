@@ -7,8 +7,7 @@ from typing import TypedDict, Mapping, Literal, NotRequired
 
 
 class LayerMix(nn.Module):
-    # Proposed by https://aclanthology.org/D19-1279.pdf ?
-    # Layer dropout by https://nejlt.ep.liu.se/article/view/4932
+    # Proposed by https://aclanthology.org/D19-1279.pdf
     def __init__(
             self, num_layers: int,
             layer_dropout: float = 0.1,
