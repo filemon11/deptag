@@ -718,7 +718,6 @@ def calc_tag_accuracy_k(
         eval_labels2: None | np.ndarray = None,
         correct_sentence: bool = False,
         ) -> float:
-
     mask: np.ndarray = eval_labels != -1
     if not correct_sentence:
         eval_labels = eval_labels[mask]
@@ -746,9 +745,6 @@ def calc_tag_accuracy_k(
 
         acc = (predictions == eval_labels[..., None]).any(-1)
 
-    if correct_sentence:
-        acc = acc.all(-1)
-
     if predictions2 is not None and eval_labels2 is not None:
         assert predictions2 is not None
         assert eval_labels2 is not None
@@ -758,6 +754,7 @@ def calc_tag_accuracy_k(
             eval_labels2 = eval_labels2[mask2]
             predictions2 = predictions2[mask2]
 
+        assert isinstance(predictions2, np.ndarray)
         n_classes = predictions2.shape[-1]
         k_eff = min(k, n_classes)
 
@@ -775,10 +772,10 @@ def calc_tag_accuracy_k(
 
             acc2 = (predictions2 == eval_labels2[..., None]).any(-1)
 
-        if correct_sentence:
-            acc2 = acc2.all(-1)
-
         acc = np.logical_and(acc, acc2)
+
+    if correct_sentence:
+        acc = acc.all(-1)
 
     acc = acc.mean()
 

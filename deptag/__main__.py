@@ -1,7 +1,6 @@
 import argparse
 import logging
 import pathlib
-import dataclasses
 
 from . import learning, extraction, data, settings, utils
 
@@ -33,6 +32,10 @@ opt = subparser.add_parser('opt')
 
 evaluate.add_argument(
     '--k', default=1, type=int, help="best k to check"
+)
+
+opt.add_argument(
+    '-e', "--eval", action='store_true', help="perform eval optimisation"
 )
 
 
@@ -254,10 +257,10 @@ if __name__ == "__main__":
         if splits is not None:
             for split in splits:
                 learning.evaluate_command(
-                    sett, args.k, overwrite_split=split)  # type: ignore
+                    sett, k=args.k, overwrite_split=split)  # type: ignore
         else:
             learning.evaluate_command(
-                sett, args.k)
+                sett, k=args.k)
     elif args.command == 'predict':
         sett = settings.load_settings("full", args.settings)
         learning.predict_command(sett)
@@ -268,8 +271,13 @@ if __name__ == "__main__":
         sett_extr = settings.load_settings("extract", args.settings)
         extract_func(sett_extr)
     elif args.command == "opt":
-        sett_opt = settings.load_settings("opt", args.settings)
-        utils.set_seed(sett_opt.tagging.seed, verbose=True)
-        learning.optimise(sett_opt)
+        if args.eval:
+            sett_eval_opt = settings.load_settings("eval_opt", args.settings)
+            utils.set_seed(sett_eval_opt.tagging.seed, verbose=True)
+            learning.eval_optimise(sett_eval_opt)
+        else:
+            sett_opt = settings.load_settings("opt", args.settings)
+            utils.set_seed(sett_opt.tagging.seed, verbose=True)
+            learning.optimise(sett_opt)
     else:
         raise Exception(f"Option {args.command} unknown.")

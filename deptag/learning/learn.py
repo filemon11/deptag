@@ -93,6 +93,22 @@ def prepare_training_loaders(
     return train_dataloader, eval_dataloader
 
 
+def prepare_eval_loader(
+        dataset: dataset.TaggingDataset,
+        batch_size: int,
+        device: torch.types.Device = torch.device(
+            'cuda' if torch.cuda.is_available() else 'cpu'),
+        ) -> DataLoader:
+    dataloader = DataLoader(
+        dataset, shuffle=False, batch_size=batch_size,
+        collate_fn=dataset.collate,
+        pin_memory=True,
+        # pin_memory_device=device,  # type: ignore
+        # should only be done in multi-gpu setting when providing device
+    )
+    return dataloader
+
+
 def prepare_training_data(
         train_data: Sequence[Sequence[extraction.Token]],
         eval_data: Sequence[Sequence[extraction.Token]],
@@ -143,7 +159,9 @@ def prepare_test_data(
         tag_system: Mapping[str, int],
         model_path: str,
         batch_size: int,
-        factorised: bool = False) -> tuple[dataset.TaggingDataset, DataLoader]:
+        factorised: bool = False,
+        get_loader=True
+        ) -> tuple[dataset.TaggingDataset, DataLoader | None]:
 
     print(f"Evaluating {model_path}")
     tokeniser = transformers.AutoTokenizer.from_pretrained(
@@ -158,12 +176,14 @@ def prepare_test_data(
         "test", tokeniser, tag_system, test_data,
         dataset_name, factorised_max_left_right=factorised_max_left_right,
     )
-    test_dataloader = DataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        collate_fn=test_dataset.collate
-    )
-    return test_dataset, test_dataloader
+    if get_loader:
+        test_dataloader = DataLoader(
+            test_dataset,
+            batch_size=batch_size,
+            collate_fn=test_dataset.collate
+        )
+        return test_dataset, test_dataloader
+    return test_dataset, None
 
 
 def register_run_metrics(
@@ -267,7 +287,8 @@ def get_accuracies(
             sup_predictions, eval_sup_labels, writer,
             use_tensorboard, n_iter,
             typ="sup_and_arc_sent", k=k, printinfo=printinfo,
-            predictions2=arc_predictions, eval_labels2=eval_arc_labels,
+            predictions2=arc_predictions[..., 1:, :],
+            eval_labels2=eval_arc_labels[..., 1:],
             correct_sentence=True)
     for f_name, f_predictions in factorised_predictions.items():
         dev_factorised_accs[f_name] = func(
@@ -431,6 +452,53 @@ def prepare_data_and_loaders(
             device=device))
 
     return train_dataset, dev_dataset, train_dataloader, dev_dataloader
+
+
+def prepare_data_and_loaders_eval(
+        file_args: settings.FileSettings,
+        dep_args: settings.DepSettings,
+        tag_vocab_path: str,
+        model_path: str,
+        batch_size: int,
+        get_loader: bool = True,
+        split: settings.Split = "test",
+        ) -> tuple[
+            dataset.TaggingDataset,
+            DataLoader | None]:
+    data_path = pathlib.Path(file_args.data_folder)
+    prefix: str = file_args.conllu_file
+
+    sup2id = initialize_tag_system(
+        prefix, pathlib.Path(tag_vocab_path)
+    )
+
+    reader = data.load_conllu(prefix, split, dir=data_path)
+    logging.info("Preparing Data")
+
+    dat = extraction.prepare(
+        reader,
+        arguments=dep_args.arguments,
+        adjuncts=dep_args.adjuncts,
+        delete=dep_args.delete,
+        merged=dep_args.merged,
+        without_labels=not dep_args.labelled,
+        distinguish_fallback_subtypes=not dep_args.labelled,
+        merged_fallback_subtypes=dep_args.merged_fallback_subtypes,
+        distinguish_merged_fallback_subtypes=(
+            dep_args.distinguish_merged_fallback_subtypes),
+        order_relations=dep_args.order_relations,
+        subtypes=dep_args.subtypes,
+        )
+
+    logging.info(f"Loaded {len(dat)} evaluation sentences.")
+    dataset, dataloader = (
+        prepare_test_data(
+            dat, prefix,
+            sup2id, model_path, batch_size,
+            factorised=True,
+            get_loader=get_loader))
+
+    return dataset, dataloader
 
 
 def train_command(
@@ -1373,113 +1441,106 @@ def _finish_training(
 
 
 def evaluate_command(
-        args: settings.Settings, k: int = 1,
+        args: settings.Settings | None = None,
+        tagging_settings: settings.TaggingSettings | None = None,
+        file_settings: settings.FileSettings | None = None,
+        dep_settings: settings.DepSettings | None = None,
+        k: int = 1,
         device: torch.types.Device = torch.device(
             'cuda' if torch.cuda.is_available() else 'cpu'),
-        overwrite_split: settings.Split | None = None):
-    data_path: pathlib.Path = pathlib.Path(
-        args.file.data_folder)
+        overwrite_split: settings.Split | None = None,
+        data: tuple[
+            dataset.TaggingDataset,
+            DataLoader] | None = None,
+        model: model.ModelForTagging | None = None) -> None | float:
+
+    return_metric: bool = False
+    if data is None:
+
+        assert args is not None
+        tagging_settings = args.tagging
+        dep_settings = args.deprels
+        file_settings = args.file
+
+        split = args.file.split
+        if overwrite_split is not None:
+            split = overwrite_split
+        assert split is not None
+
+        (
+            dataset, dataloader,
+        ) = prepare_data_and_loaders_eval(
+            file_settings, dep_settings, tagging_settings.tag_vocab_path,
+            tagging_settings.model_path, tagging_settings.batch_size,
+            split=split)
+    else:
+        assert tagging_settings is not None
+        assert file_settings is not None
+        assert dep_settings is not None
+        (
+            dataset, dataloader,
+        ) = data
+
+        return_metric = True
+
+    sup2id = dataset.sup2id
+    id2sup = dataset.id2sup
+    id2sup_relative = dataset.id2sup_relative
+
+    max_l = dataset.max_l
+    max_r = dataset.max_r
+
+    id2pos = dataset.id2pos
+    id2deprel = dataset.id2deprel
 
     print("Evaluation Args", args)
-    prefix: str = args.file.conllu_file
 
-    split = args.file.split
-    if overwrite_split is not None:
-        split = overwrite_split
+    writer = SummaryWriter(comment=tagging_settings.model_name)
 
-    test_reader = data.load_conllu(prefix, split, dir=data_path)
-    test_data = extraction.prepare(
-        test_reader,
-        arguments=args.deprels.arguments,
-        adjuncts=args.deprels.adjuncts,
-        delete=args.deprels.delete,
-        merged=args.deprels.merged,
-        without_labels=not args.deprels.labelled,
-        distinguish_fallback_subtypes=not args.deprels.labelled,
-        merged_fallback_subtypes=args.deprels.merged_fallback_subtypes,
-        distinguish_merged_fallback_subtypes=(
-            args.deprels.distinguish_merged_fallback_subtypes),
-        order_relations=args.deprels.order_relations,
-        subtypes=args.deprels.subtypes,
-        )
-
-    sup2id = initialize_tag_system(
-        prefix, pathlib.Path(args.tagging.tag_vocab_path)
-    )
-    print("sups", len(sup2id), args.tagging.tag_vocab_path)
-    id2sup = {i: sup for sup, i in sup2id.items()}
-    id2sup_relative = {
-        i: extraction.convert_string_to_relative_relation(tag)
-        for i, tag in id2sup.items()}
-
-    id2relative_sup: dict[
-        int, None | extraction.ProjectiveTag]
-    id2relative_sup = {
-        i: extraction.process_relative_tag_to_projective(
-            extraction.convert_string_to_relative_relation(sup))
-        for i, sup in id2sup.items()}
-    lr_args = [
-        extraction.get_lr_argnum(tag)
-        for tag in id2relative_sup.values() if tag is not None]
-    max_l = max([lr[0] for lr in lr_args])
-    max_r = max([lr[1] for lr in lr_args])
-
-    writer = SummaryWriter(comment=args.tagging.model_name)
-
-    logging.info("Preparing Data")
-    eval_dataset, eval_dataloader = prepare_test_data(
-        test_data, prefix, sup2id, args.tagging.model_path,
-        args.tagging.batch_size, args.tagging.factorised is not False)
-
-    id2pos = {
-        i: pos for pos, i in eval_dataset.pos_dict.items()}
-    id2deprel = {
-        i: deprel for deprel, i in eval_dataset.deprel_dict.items()}
-
-    id2pos = {i: pos for pos, i in eval_dataset.pos_dict.items()}
-
-    model = config.initialise_model(
-        sup2id,
-        args.tagging.model_path,
-        num_pos_tags=len(eval_dataset.pos_dict),
-        num_xpos_tags=len(eval_dataset.xpos_dict),
-        num_deprel_tags=len(eval_dataset.deprel_dict),
-        num_sup_deprel_tags=len(eval_dataset.sup_deprel_dict),
-        num_feats_tags={
-            feat: len(dic) for feat, dic in eval_dataset.feats_dicts.items()},
-        train_deprel=args.tagging.train_deprel,
-        train_arc=args.tagging.train_arc,
-        train_sup=args.tagging.train_sup,
-        train_pos=args.tagging.train_pos,
-        train_xpos=args.tagging.train_xpos,
-        train_feats=args.tagging.train_feats,
-        factorised=args.tagging.factorised,
-        extra_num_labels={
-            subtype: len(dic)
-            for subtype, dic
-            in eval_dataset.subtypes_dicts.items()},
-        train_subtypes=args.tagging.train_subtypes,
-        pos_label_smoothing=args.tagging.pos_label_smoothing,
-        xpos_label_smoothing=args.tagging.xpos_label_smoothing,
-        arc_label_smoothing=args.tagging.arc_label_smoothing,
-        deprel_label_smoothing=args.tagging.deprel_label_smoothing,
-        sup_label_smoothing=args.tagging.sup_label_smoothing,
-        feats_label_smoothing=args.tagging.feats_label_smoothing,
-        subtypes_label_smoothing=args.tagging.subtypes_label_smoothing,
-        proj_drop=args.tagging.proj_drop,
-        arc_drop=args.tagging.arc_drop,
-        deprel_drop=args.tagging.deprel_drop,
-        mix_drop=args.tagging.mix_drop,
-        deprel_hidden=args.tagging.deprel_hidden,
-        arc_hidden=args.tagging.arc_hidden,
-        compile=args.tagging.compile,)
+    if model is None:
+        model = config.initialise_model(
+            sup2id,
+            tagging_settings.model_path,
+            num_pos_tags=len(dataset.pos_dict),
+            num_xpos_tags=len(dataset.xpos_dict),
+            num_deprel_tags=len(dataset.deprel_dict),
+            num_sup_deprel_tags=len(dataset.sup_deprel_dict),
+            num_feats_tags={
+                feat: len(dic) for feat, dic in dataset.feats_dicts.items()},
+            train_deprel=tagging_settings.train_deprel,
+            train_arc=tagging_settings.train_arc,
+            train_sup=tagging_settings.train_sup,
+            train_pos=tagging_settings.train_pos,
+            train_xpos=tagging_settings.train_xpos,
+            train_feats=tagging_settings.train_feats,
+            factorised=tagging_settings.factorised,
+            extra_num_labels={
+                subtype: len(dic)
+                for subtype, dic
+                in dataset.subtypes_dicts.items()},
+            train_subtypes=tagging_settings.train_subtypes,
+            pos_label_smoothing=tagging_settings.pos_label_smoothing,
+            xpos_label_smoothing=tagging_settings.xpos_label_smoothing,
+            arc_label_smoothing=tagging_settings.arc_label_smoothing,
+            deprel_label_smoothing=tagging_settings.deprel_label_smoothing,
+            sup_label_smoothing=tagging_settings.sup_label_smoothing,
+            feats_label_smoothing=tagging_settings.feats_label_smoothing,
+            subtypes_label_smoothing=tagging_settings.subtypes_label_smoothing,
+            proj_drop=tagging_settings.proj_drop,
+            arc_drop=tagging_settings.arc_drop,
+            deprel_drop=tagging_settings.deprel_drop,
+            mix_drop=tagging_settings.mix_drop,
+            deprel_hidden=tagging_settings.deprel_hidden,
+            arc_hidden=tagging_settings.arc_hidden,
+            compile=tagging_settings.compile,)
 
     assert model is not None
 
     model.load_state_dict(
         torch.load(
             pathlib.Path(
-                args.tagging.output_path) / args.tagging.eval_model_name),
+                tagging_settings.output_path
+                ) / tagging_settings.eval_model_name),
         strict=False)
     model.to(device)
 
@@ -1488,18 +1549,18 @@ def evaluate_command(
     valid_supertag2id = None
     valid_id2sup = None
     valid_id2sup_relative = None
-    if args.tagging.factorised is not False:
-        if args.tagging.factorised in ("complete", "seen"):
+    if tagging_settings.factorised is not False:
+        if tagging_settings.factorised in ("complete", "seen"):
             seen_factors = factorisation.preprocess_supertags(
                 sup2id,
-                eval_dataset.deprel_dict,
+                dataset.deprel_dict,
                 max_l,
                 max_r,
             )
 
-        if args.tagging.eval_metric.startswith("a*"):
+        if tagging_settings.eval_metric.startswith("a*"):
             # print(len(train_dataset.deprel_dict)); raise Exception
-            if args.tagging.factorised == "structural":
+            if tagging_settings.factorised == "structural":
                 valid_supertag2id = (
                     factorisation.generate_valid_structural_supertag2id(
                         max_l=max_l,
@@ -1530,11 +1591,11 @@ def evaluate_command(
         subtypes_predictions, eval_subtypes_labels,
         *_) = (
         evaluate.predict(
-            model, eval_dataloader, len(eval_dataset),
-            len(sup2id), args.tagging.batch_size, device,
+            model, dataloader, len(dataset),
+            len(sup2id), tagging_settings.batch_size, device,
             deprels_matrix=True,
-            gold_arc=args.tagging.gold_arc,
-            gold_sup=args.tagging.gold_sup,)
+            gold_arc=tagging_settings.gold_arc,
+            gold_sup=tagging_settings.gold_sup,)
         )
 
     deprel_predictions_ = deprel_predictions
@@ -1561,11 +1622,11 @@ def evaluate_command(
         if eval_arc_labels is not None
     }
 
-    t_sup: float = args.tagging.t_sup
-    t_arc: float = args.tagging.t_arc
+    t_sup: float = tagging_settings.t_sup
+    t_arc: float = tagging_settings.t_arc
 
     seen_supertag_logps = None
-    if args.tagging.factorised in ("seen", "complete"):
+    if tagging_settings.factorised in ("seen", "complete"):
         assert seen_factors is not None
         seen_supertag_logps = factorisation.score_supertags_batch(
             seen_factors,
@@ -1588,7 +1649,7 @@ def evaluate_command(
         dev_subtypes_accs, dev_suparc_accs,
         dev_suparc_sent_accs) = (
         get_accuracies(
-            writer, 0, args.tagging.use_tensorboard,
+            writer, 0, tagging_settings.use_tensorboard,
             predictions, eval_labels,
             pos_predictions, eval_pos_labels,
             arc_predictions, eval_arc_labels,
@@ -1669,24 +1730,26 @@ def evaluate_command(
             print(
                 f"sup_and_arc_sent_acc k={k}:", dev_suparc_sent_accs)
 
-    assert args.tagging.eval_metric is not None
-    eval_metrics: tuple[settings.EvalMetric, ...] = (args.tagging.eval_metric,)
-    if "a*" in args.tagging.eval_metric:
-        eval_metrics = ("a*-uas", "a*-um", "a*-las", "a*-lm")
-    elif "mst" in args.tagging.eval_metric:
-        eval_metrics = ("mst-uas", "mst-um", "mst-las", "mst-lm")
+    assert tagging_settings.eval_metric is not None
+    eval_metrics: tuple[settings.EvalMetric, ...] = (
+        tagging_settings.eval_metric,)
+    if not return_metric:
+        if "a*" in tagging_settings.eval_metric:
+            eval_metrics = ("a*-uas", "a*-um", "a*-las", "a*-lm")
+        elif "mst" in tagging_settings.eval_metric:
+            eval_metrics = ("mst-uas", "mst-um", "mst-las", "mst-lm")
 
     for metric_name in eval_metrics:
         eval_metric: float = evaluate.get_eval_metric(
             metric_name,
-            args.tagging.factorised,
-            args.tagging.deprels_from_supertags,
+            tagging_settings.factorised,
+            tagging_settings.deprels_from_supertags,
             combined_acc=0,
             sup_predictions=predictions,
             arc_predictions=arc_predictions,
             pos_predictions=(
-                pos_predictions if args.deprels.merged is not None
-                and len(args.deprels.merged) > 0 else None),
+                pos_predictions if dep_settings.merged is not None
+                and len(dep_settings.merged) > 0 else None),
             deprel_predictions=deprel_predictions,
             factorised_predictions=factorised_predictions,
             seen_supertag_logps=seen_supertag_logps,
@@ -1695,7 +1758,7 @@ def evaluate_command(
             eval_deprel_labels=eval_deprel_labels,
             id2pos=id2pos,
             id2deprel=id2deprel,
-            deprel2id=eval_dataset.deprel_dict,
+            deprel2id=dataset.deprel_dict,
             id2sup=id2sup,
             sup2id=sup2id,
             id2sup_relative=id2sup_relative,
@@ -1704,16 +1767,21 @@ def evaluate_command(
             valid_factors=valid_factors,
             max_l=max_l,
             max_r=max_r,
-            k_supertag=args.tagging.k_supertag,
-            k_head_scores=args.tagging.k_head_scores,
+            k_supertag=tagging_settings.k_supertag,
+            k_head_scores=tagging_settings.k_head_scores,
             t_arc=t_arc,
             t_sup=t_sup,
-            sup_score_scale=args.tagging.sup_score_scale,
-            do_fallback=args.tagging.do_fallback,
+            sup_score_scale=tagging_settings.sup_score_scale,
+            do_fallback=tagging_settings.do_fallback,
         )
 
         print(
             f"eval metric {metric_name}:", eval_metric)
+
+        if return_metric:
+            return eval_metric
+
+    return None
 
 
 def predict_command(
@@ -1740,7 +1808,7 @@ def predict_command(
         distinguish_merged_fallback_subtypes=(
             args.deprels.distinguish_merged_fallback_subtypes),
         order_relations=args.deprels.order_relations,
-        subtypes=dep_args.subtypes,
+        subtypes=args.deprels.subtypes,
         )
 
     logging.info("Initializing Tag System")

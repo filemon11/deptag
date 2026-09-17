@@ -186,6 +186,26 @@ class OptSettings:
 
 
 @dataclasses.dataclass(frozen=True)
+class TaggingEvalRangesSettings:
+    t_arc: tuple[float, float, float] | None = None
+    t_sup: tuple[float, float, float] | None = None
+    sup_score_scale: tuple[float, float, float] | None = None
+    k_supertag: tuple[int, int] | None = None
+    k_head_scores: tuple[int, int] | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class EvalOptSettings:
+    ranges: TaggingEvalRangesSettings
+    tagging: TaggingSettings
+    deprels: DepSettings
+    file: FileSettings
+    study_name: str
+    n_trials: int
+    opt_path: str = "./opt"
+
+
+@dataclasses.dataclass(frozen=True)
 class ExtractSettings:
     deprels: DepSettings
     file: FileSettings
@@ -221,6 +241,20 @@ def load_opt_settings(
         ) -> OptSettings:
     return ts.load_settings(
         OptSettings,
+        loaders=ts.default_loaders(
+            appname="opt",
+            config_files=[dir / f"{name}.toml"],
+        ),
+        converter=converter,
+    )
+
+
+def load_eval_opt_settings(
+        name: str = DEFAULT_SETTINGS,
+        *, dir: pathlib.Path = SETTINGS_DIR
+        ) -> EvalOptSettings:
+    return ts.load_settings(
+        EvalOptSettings,
         loaders=ts.default_loaders(
             appname="opt",
             config_files=[dir / f"{name}.toml"],

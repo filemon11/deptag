@@ -34,14 +34,24 @@ def load_settings(
     ...
 
 
+@overload
 def load_settings(
-        mode: Literal["extract", "full", "opt"] = "full",
+        mode: Literal["eval_opt"],
+        settings_name: str = settings.DEFAULT_SETTINGS,
+        *, settings_dir: pathlib.Path = settings.SETTINGS_DIR
+        ) -> settings.EvalOptSettings:
+    ...
+
+
+def load_settings(
+        mode: Literal["extract", "full", "opt", "eval_opt"] = "full",
         settings_name: str = settings.DEFAULT_SETTINGS,
         *, settings_dir: pathlib.Path = settings.SETTINGS_DIR
         ) -> (
             settings.Settings
             | settings.ExtractSettings
-            | settings.OptSettings):
+            | settings.OptSettings
+            | settings.EvalOptSettings):
     """_summary_
 
     Args:
@@ -77,6 +87,11 @@ def load_settings(
         )
     elif mode == "opt":
         sett = settings.load_opt_settings(
+            settings_name,
+            dir=settings_dir
+        )
+    elif mode == "eval_opt":
+        sett = settings.load_eval_opt_settings(
             settings_name,
             dir=settings_dir
         )
