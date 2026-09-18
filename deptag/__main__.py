@@ -253,6 +253,7 @@ if __name__ == "__main__":
             continue
     elif args.command == 'evaluate':
         sett = settings.load_settings("full", args.settings)
+        utils.set_seed(sett.tagging.seed, verbose=True)
         splits = sett.file.splits
         if splits is not None:
             for split in splits:

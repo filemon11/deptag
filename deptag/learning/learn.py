@@ -4,6 +4,7 @@ import pickle
 import json
 
 import numpy as np
+import random
 import torch
 import transformers
 from torch.utils.data import DataLoader
@@ -71,23 +72,37 @@ def save_vocab(args: settings.Settings):
         pickle.dump(sup2id, f)
 
 
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
 def prepare_training_loaders(
         train_dataset: dataset.TaggingDataset,
         eval_dataset: dataset.TaggingDataset,
         batch_size: int,
         device: torch.types.Device = torch.device(
             'cuda' if torch.cuda.is_available() else 'cpu'),
+        seed: int = 0,
         ) -> tuple[DataLoader, DataLoader]:
+    g = torch.Generator()
+    g.manual_seed(seed)
+
     train_dataloader = DataLoader(
         train_dataset, shuffle=True, batch_size=batch_size,
         collate_fn=train_dataset.collate,
         pin_memory=True,
+        worker_init_fn=seed_worker,
+        generator=g,
         # pin_memory_device=device,  # type: ignore
         # should only be done in multi-gpu setting when providing device
     )
     eval_dataloader = DataLoader(
         eval_dataset, batch_size=batch_size, collate_fn=eval_dataset.collate,
         pin_memory=True,
+        worker_init_fn=seed_worker,
+        generator=g,
         # pin_memory_device=device,  # type: ignore
     )
     return train_dataloader, eval_dataloader
@@ -98,11 +113,16 @@ def prepare_eval_loader(
         batch_size: int,
         device: torch.types.Device = torch.device(
             'cuda' if torch.cuda.is_available() else 'cpu'),
+        seed: int = 0,
         ) -> DataLoader:
+    g = torch.Generator()
+    g.manual_seed(seed)
     dataloader = DataLoader(
         dataset, shuffle=False, batch_size=batch_size,
         collate_fn=dataset.collate,
         pin_memory=True,
+        worker_init_fn=seed_worker,
+        generator=g,
         # pin_memory_device=device,  # type: ignore
         # should only be done in multi-gpu setting when providing device
     )
@@ -121,7 +141,8 @@ def prepare_training_data(
         eval_fraction: float = 1.0,
         get_loaders: bool = True,
         device: torch.types.Device = torch.device(
-            'cuda' if torch.cuda.is_available() else 'cpu')
+            'cuda' if torch.cuda.is_available() else 'cpu'),
+        seed: int = 0,
         ) -> tuple[
             dataset.TaggingDataset, dataset.TaggingDataset,
             DataLoader, DataLoader] | tuple[
@@ -148,7 +169,7 @@ def prepare_training_data(
     if get_loaders:
         train_dataloader, eval_dataloader = prepare_training_loaders(
             train_dataset, eval_dataset, batch_size=batch_size,
-            device=device,)
+            device=device, seed=seed)
         return train_dataset, eval_dataset, train_dataloader, eval_dataloader
     return train_dataset, eval_dataset, None, None
 
@@ -160,8 +181,12 @@ def prepare_test_data(
         model_path: str,
         batch_size: int,
         factorised: bool = False,
-        get_loader=True
+        get_loader=True,
+        seed: int = 0,
         ) -> tuple[dataset.TaggingDataset, DataLoader | None]:
+
+    g = torch.Generator()
+    g.manual_seed(seed)
 
     print(f"Evaluating {model_path}")
     tokeniser = transformers.AutoTokenizer.from_pretrained(
@@ -180,7 +205,9 @@ def prepare_test_data(
         test_dataloader = DataLoader(
             test_dataset,
             batch_size=batch_size,
-            collate_fn=test_dataset.collate
+            collate_fn=test_dataset.collate,
+            worker_init_fn=seed_worker,
+            generator=g,
         )
         return test_dataset, test_dataloader
     return test_dataset, None
@@ -398,6 +425,7 @@ def prepare_data_and_loaders(
         get_loaders: bool = True,
         device: torch.types.Device = torch.device(
             'cuda' if torch.cuda.is_available() else 'cpu'),
+        seed: int = 0,
         ) -> tuple[
             dataset.TaggingDataset, dataset.TaggingDataset,
             DataLoader, DataLoader] | tuple[
@@ -449,7 +477,8 @@ def prepare_data_and_loaders(
             train_fraction=file_args.train_fraction,
             eval_fraction=file_args.eval_fraction,
             get_loaders=get_loaders,
-            device=device))
+            device=device,
+            seed=seed,))
 
     return train_dataset, dev_dataset, train_dataloader, dev_dataloader
 
@@ -462,6 +491,7 @@ def prepare_data_and_loaders_eval(
         batch_size: int,
         get_loader: bool = True,
         split: settings.Split = "test",
+        seed: int = 0,
         ) -> tuple[
             dataset.TaggingDataset,
             DataLoader | None]:
@@ -496,7 +526,8 @@ def prepare_data_and_loaders_eval(
             dat, prefix,
             sup2id, model_path, batch_size,
             factorised=True,
-            get_loader=get_loader))
+            get_loader=get_loader,
+            seed=seed))
 
     return dataset, dataloader
 
@@ -527,7 +558,8 @@ def train_command(
         ) = prepare_data_and_loaders(
             file_settings, args.deprels,
             args.tagging.model_path, args.tagging.batch_size,
-            device=device)
+            device=device,
+            seed=tagging_settings.seed,)
     else:
         assert tagging_settings is not None
         assert file_settings is not None
@@ -1472,7 +1504,7 @@ def evaluate_command(
         ) = prepare_data_and_loaders_eval(
             file_settings, dep_settings, tagging_settings.tag_vocab_path,
             tagging_settings.model_path, tagging_settings.batch_size,
-            split=split)
+            split=split, seed=tagging_settings.seed)
     else:
         assert tagging_settings is not None
         assert file_settings is not None

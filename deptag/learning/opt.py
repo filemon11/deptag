@@ -186,6 +186,7 @@ class Objective:
             self.args.tagging.batch_size,
             get_loaders=False,
             device=torch.device("cpu"),
+            seed=args.tagging.seed,
         )[:2]
 
     def save_pruner_and_sampler(
@@ -222,7 +223,8 @@ class Objective:
                         data=(*self.data, *learn.prepare_training_loaders(
                             self.data[0], self.data[1],
                             self.args.tagging.batch_size,
-                            device=torch.device(gpu_i))),
+                            device=torch.device(gpu_i),
+                            seed=seed,)),
                         save_model=False,
                         device=torch.device(gpu_i),
                         final_eval=False)):
@@ -308,6 +310,7 @@ class EvalObjective:
             self.args.tagging.batch_size,
             get_loader=False,
             split=args.file.split,
+            seed=args.tagging.seed,
         )[0]
 
         self.tagging_model = config.initialise_model(
@@ -378,7 +381,8 @@ class EvalObjective:
                     self.data, learn.prepare_eval_loader(
                         self.data,
                         self.args.tagging.batch_size,
-                        device=torch.device(gpu_i))),
+                        device=torch.device(gpu_i),
+                        seed=seed,)),
                 device=torch.device(gpu_i),
                 model=self.tagging_model)
             assert eval_score is not None
