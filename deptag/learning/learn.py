@@ -1568,13 +1568,13 @@ def evaluate_command(
 
     assert model is not None
 
+    model.to(device)
     model.load_state_dict(
         torch.load(
             pathlib.Path(
                 tagging_settings.output_path
                 ) / tagging_settings.eval_model_name),
         strict=False)
-    model.to(device)
 
     seen_factors = None
     valid_factors = None
