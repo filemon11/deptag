@@ -317,6 +317,13 @@ def get_accuracies(
             predictions2=arc_predictions[..., 1:, :],
             eval_labels2=eval_arc_labels[..., 1:],
             correct_sentence=True)
+    if arc_predictions is not None and deprel_predictions is not None:
+        dev_arcdep_acc = func(
+            arc_predictions, eval_arc_labels, writer,
+            use_tensorboard, n_iter,
+            typ="arc_and_deprel", k=k, printinfo=printinfo,
+            predictions2=deprel_predictions,
+            eval_labels2=eval_deprel_labels)
     for f_name, f_predictions in factorised_predictions.items():
         dev_factorised_accs[f_name] = func(
             f_predictions, eval_factorised_labels[f_name],
@@ -346,7 +353,7 @@ def get_accuracies(
         dev_sup_acc, dev_pos_acc, dev_arc_acc,
         dev_deprel_acc, dev_factorised_accs,
         dev_xpos_acc, dev_feats_accs, dev_subtypes_accs,
-        dev_suparc_acc, dev_suparc_sent_acc)
+        dev_suparc_acc, dev_suparc_sent_acc, dev_arcdep_acc)
 
 
 @dataclasses.dataclass
@@ -1149,7 +1156,7 @@ def train_command(
                         dev_deprel_acc, dev_factorised_accs,
                         dev_xpos_acc, dev_feats_accs,
                         dev_subtypes_accs, dev_suparc_acc,
-                        dev_suparc_sent_acc) = (
+                        dev_suparc_sent_acc, dev_arcdep_acc) = (
                         get_accuracies(
                             writer, n_iter, tagging_settings.use_tensorboard,
                             predictions, eval_labels,
@@ -1449,7 +1456,7 @@ def _finish_training(
         deprel_acc, dev_factorised_accs,
         dev_xpos_accs, dev_feats_accs,
         dev_subtypes_accs, dev_suparc_acc,
-        dev_suparc_sent_acc) = (
+        dev_suparc_sent_acc, dev_arcdep_acc) = (
         get_accuracies(
             writer, n_iter, args.use_tensorboard,
             predictions, eval_labels,
@@ -1679,7 +1686,7 @@ def evaluate_command(
         dev_deprel_accs, dev_factorised_accs,
         dev_xpos_accs, dev_feats_accs,
         dev_subtypes_accs, dev_suparc_accs,
-        dev_suparc_sent_accs) = (
+        dev_suparc_sent_accs, dev_arcdep_acc) = (
         get_accuracies(
             writer, 0, tagging_settings.use_tensorboard,
             predictions, eval_labels,
@@ -1729,6 +1736,9 @@ def evaluate_command(
             if dev_suparc_sent_accs is not None:
                 print(
                     f"sup_and_arc_sent_acc k={k}:", dev_suparc_sent_accs[k-1])
+            if dev_arcdep_acc is not None:
+                print(
+                    f"arc_and_deprel_acc k={k}:", dev_arcdep_acc[k-1])
 
     else:
         if dev_sup_accs is not None:
@@ -1761,6 +1771,9 @@ def evaluate_command(
         if dev_suparc_sent_accs is not None:
             print(
                 f"sup_and_arc_sent_acc k={k}:", dev_suparc_sent_accs)
+        if dev_arcdep_acc is not None:
+            print(
+                f"arc_and_deprel_acc k={k}:", dev_arcdep_acc)
 
     assert tagging_settings.eval_metric is not None
     eval_metrics: tuple[settings.EvalMetric, ...] = (
