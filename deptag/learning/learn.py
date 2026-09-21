@@ -1225,8 +1225,9 @@ def train_command(
                         combined_acc += dev_arc_acc
                     if dev_deprel_acc is not None:
                         combined_acc += dev_deprel_acc
-                    for f_dev_acc in dev_factorised_accs.values():
-                        combined_acc += f_dev_acc
+                    # for f_dev_acc in dev_factorised_accs.values():
+                    #     combined_acc += f_dev_acc
+                    # Is covered by dev_sup_acc of known supertags
                     for f_dev_acc in dev_feats_accs.values():
                         combined_acc += f_dev_acc
                     # combined_acc /= num_losses
@@ -1328,7 +1329,8 @@ def train_command(
                     if tol < 0:
                         if final_eval:
                             _finish_training(
-                                tagging_model, sup2id, dev_dataloader,
+                                tagging_model, sup2id,
+                                dev_dataloader,
                                 dev_dataset, run_name, writer,
                                 tagging_settings,
                                 n_iter,
