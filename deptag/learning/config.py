@@ -197,6 +197,10 @@ def initialise_model(
         deprel_hidden=deprel_hidden,
     )
     tagging_model = model.ModelForTagging(config=config)  # type: ignore
+    print(
+        "Number of trainable parameters:",
+        sum(p.numel() for p in tagging_model.parameters() if p.requires_grad))
+
     if compile:
         tagging_model.compile()
     return tagging_model

@@ -270,6 +270,7 @@ def get_accuracies(
     dev_subtypes_accs = dict()
     dev_suparc_acc = None
     dev_suparc_sent_acc = None
+    dev_arcdep_acc = None
     if k == 1:
         func = evaluate.calc_tag_accuracy_k
     else:
