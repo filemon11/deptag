@@ -263,6 +263,8 @@ def preprocess_supertags(
         n_right[tag_id] = len(tag.right)
         aux_position[tag_id] = tag.aux_position
 
+        if tag.aux_position == 9:
+            print(tag)
         # left_i is numbered inside-out, while tag.left
         # is stored in surface order.
         for i, deprel in enumerate(

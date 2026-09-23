@@ -223,6 +223,7 @@ class FactorisedMixedProjection(nn.Module):
 
         self.aux_position_projection = get_projection(
             max_l + max_r + 3)
+        print(max_l, max_r)
 
     def forward(
             self, hidden_states: tuple[torch.Tensor, ...],

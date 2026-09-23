@@ -581,8 +581,10 @@ def train_command(
     id2sup = train_dataset.id2sup
     id2sup_relative = train_dataset.id2sup_relative
 
-    max_l = train_dataset.max_l
-    max_r = train_dataset.max_r
+    max_l = train_dataset.max_left
+    max_r = train_dataset.max_right
+    print(max_l, max_r)
+    print(config.get_max_lr(train_dataset.sup2id))
 
     id2pos = train_dataset.id2pos
     id2deprel = train_dataset.id2deprel
@@ -716,6 +718,7 @@ def train_command(
     valid_id2sup_relative = None
     if tagging_settings.factorised is not False:
         if tagging_settings.factorised in ("complete", "seen"):
+            print("factors max", max_l, max_r)
             seen_factors = factorisation.preprocess_supertags(
                 sup2id,
                 train_dataset.deprel_dict,

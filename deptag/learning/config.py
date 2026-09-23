@@ -75,6 +75,7 @@ def generate_config(
     max_r = None
     if factorised is not None:
         max_l, max_r = get_max_lr(tag_system)
+        print("max:", max_l, max_r)
 
     config.task_specific_params = {
         "model_path": model_path,

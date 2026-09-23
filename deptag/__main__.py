@@ -190,9 +190,9 @@ def extract_func(sett: settings.ExtractSettings):
                 # "Italian-ISDT",
                 # "Dutch-Alpino",
                 # "Norwegian-Bokmaal",
-                # "Romanian-RRT",
+                "Romanian-RRT",
                 # "Russian-SynTagRus",
-                "combined",
+                # "combined",
                 ) if not print(name)
         ]
 
@@ -209,7 +209,7 @@ def extract_func(sett: settings.ExtractSettings):
         setts1, replace_labels_in_unicorns=False,
         replacement_threshold=0, plot_unicorn_sentences=True)
     extraction.print_statistics(stat)
-    # print(stat.supertags)
+    print(stat.supertags)
     # print(stat.supertag_to_nums)
     # TODO: put replace_labels in unicorns and replacement_threshold in
     # meta settings
@@ -249,6 +249,8 @@ if __name__ == "__main__":
     if args.command == 'train':
         sett = settings.load_settings("full", args.settings)
         utils.set_seed(sett.tagging.seed, verbose=True)
+
+        print("Training Args", sett)
         for _ in learning.train_command(sett):
             continue
     elif args.command == 'evaluate':
