@@ -1532,8 +1532,8 @@ def evaluate_command(
     id2sup = dataset.id2sup
     id2sup_relative = dataset.id2sup_relative
 
-    max_l = dataset.max_l
-    max_r = dataset.max_r
+    max_l = dataset.max_left
+    max_r = dataset.max_right
 
     id2pos = dataset.id2pos
     id2deprel = dataset.id2deprel
