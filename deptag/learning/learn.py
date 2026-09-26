@@ -304,6 +304,8 @@ def get_accuracies(
         #     sup_predictions, eval_sup_labels, writer,
         #     use_tensorboard, n_iter,
         #     typ="sup", k=10, printinfo=True)
+    if sup_predictions is None and f_supertag_logps is not None:
+        sup_predictions = f_supertag_logps
     if sup_predictions is not None and arc_predictions is not None:
         dev_suparc_acc = func(
             sup_predictions, eval_sup_labels, writer,
