@@ -3088,7 +3088,7 @@ def chart(
         t_arc: float = 1,
         sup_score_scale: float = 1.0,
         do_fallback: bool = True
-        ) -> tuple[np.ndarray, np.ndarray]:
+        ) -> tuple[np.ndarray, np.ndarray, float]:
 
     start = timer()
 
@@ -3122,7 +3122,7 @@ def chart(
     print("Chart took", timedelta(seconds=end-start), "seconds")
     print("Found result:", sum([s[2] for s in stack]), "of", len(stack))
 
-    return np.stack([s[0] for s in stack]), np.stack([s[1] for s in stack])
+    return np.stack([s[0] for s in stack]), np.stack([s[1] for s in stack]), sum([s[2] for s in stack])/len(stack)
 
 # TODO: keep track of widest complete item, return it if not finding goal,
 # allow backtracking

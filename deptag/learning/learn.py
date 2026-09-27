@@ -1787,7 +1787,9 @@ def evaluate_command(
     eval_metrics: tuple[settings.EvalMetric, ...] = (
         tagging_settings.eval_metric,)
     if not return_metric:
-        if "a*" in tagging_settings.eval_metric:
+        if (
+                "a*" in tagging_settings.eval_metric
+                or tagging_settings.eval_metric == "frac_res"):
             eval_metrics = ("a*-uas", "a*-um", "a*-las", "a*-lm")
         elif "mst" in tagging_settings.eval_metric:
             eval_metrics = ("mst-uas", "mst-um", "mst-las", "mst-lm")

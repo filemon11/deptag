@@ -874,7 +874,7 @@ def select_deprel_logits(
 def get_eval_metric(
         eval_metric_type: Literal[
             "cacc", "a*-las", "a*-uas", "mst-las", "mst-uas",
-            "a*-um", "a*-lm", "mst-um", "mst-lm"],
+            "a*-um", "a*-lm", "mst-um", "mst-lm", "frac_res"],
         factorised: Literal["complete", "structural", "seen", False],
         deprels_from_supertags: bool,
         combined_acc: float,
@@ -910,7 +910,7 @@ def get_eval_metric(
         case "cacc":
             eval_metric = combined_acc
 
-        case "a*-las" | "a*-uas" | "a*-lm" | "a*-um":
+        case "a*-las" | "a*-uas" | "a*-lm" | "a*-um" | "frac_res":
             root_supertag = "*+root"
 
             assert arc_predictions is not None
@@ -997,7 +997,7 @@ def get_eval_metric(
                 root_sup_id = sup2id[root_supertag]
 
             # if epo > -1:
-            head_preds_astar, deprel_preds_astar = parsing.chart(
+            head_preds_astar, deprel_preds_astar, frac_res = parsing.chart(
                 arc_predictions,
                 eval_arc_labels,
                 supertag_scores,
@@ -1017,6 +1017,9 @@ def get_eval_metric(
             )
 
             assert eval_deprel_labels is not None
+
+            if eval_metric_type == "frac_res":
+                eval_metric = frac_res
 
             if eval_metric_type in ("a*-las", "a*-lm"):
 

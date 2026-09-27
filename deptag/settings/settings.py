@@ -17,7 +17,7 @@ Factorised = Literal[
 Mode = Literal["init", "continue", "add"]
 EvalMetric = Literal[
     "cacc", "mst-las", "mst-uas", "a*-las", "a*-uas",
-    "mst-lm", "mst-um", "a*-lm", "a*-um"]
+    "mst-lm", "mst-um", "a*-lm", "a*-um", "frac_res"]
 Split = Literal["train", "test", "dev"]
 
 IntOrStr = int | str
