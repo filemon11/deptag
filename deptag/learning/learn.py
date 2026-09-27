@@ -3,6 +3,9 @@ import logging
 import pickle
 import json
 
+from timeit import default_timer as timer
+from datetime import timedelta
+
 import numpy as np
 import random
 import torch
@@ -1627,6 +1630,7 @@ def evaluate_command(
                     i: extraction.convert_string_to_relative_relation(tag)
                     for i, tag in valid_id2sup.items()}
 
+    start = timer()
     (
         predictions, eval_labels,
         pos_predictions, eval_pos_labels,
@@ -1794,6 +1798,8 @@ def evaluate_command(
         elif "mst" in tagging_settings.eval_metric:
             eval_metrics = ("mst-uas", "mst-um", "mst-las", "mst-lm")
 
+    other_duration: timedelta = timedelta(0)
+    start_eval = timer()
     for metric_name in eval_metrics:
         eval_metric: float = evaluate.get_eval_metric(
             metric_name,
@@ -1830,11 +1836,17 @@ def evaluate_command(
             do_fallback=tagging_settings.do_fallback,
         )
 
+        end = timer()
+        print("Eval took", timedelta(
+            seconds=end-start)-other_duration, "seconds")
         print(
             f"eval metric {metric_name}:", eval_metric)
 
         if return_metric:
             return eval_metric
+
+        end = timer()
+        other_duration = timedelta(seconds=end-start_eval)
 
     return None
 
