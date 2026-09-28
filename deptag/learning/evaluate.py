@@ -919,6 +919,7 @@ def get_eval_metric(
 
             chart_id2sup: Mapping[int, str]
             chart_id2sup_relative: Mapping[int, extraction.RelativeTag]
+            chart_sup_known: np.ndarray
             if factorised == "complete":
                 argument_logps = {
                     f_name: -utils.neg_log10_softmax(f_pred / t_sup)
@@ -957,6 +958,11 @@ def get_eval_metric(
                     for i, tag in chart_id2sup.items()}
                 root_sup_id = chart_sup2id[root_supertag]
                 chart_deprel_dict = deprel2id
+
+                chart_sup_known = np.array(
+                    [sup in sup2id.keys() for sup in chart_id2sup.values()],
+                    dtype=bool
+                )
             elif factorised == "structural":
                 assert valid_factors is not None
                 supertag_scores = (
@@ -997,7 +1003,9 @@ def get_eval_metric(
                 root_sup_id = sup2id[root_supertag]
 
             # if epo > -1:
-            head_preds_astar, deprel_preds_astar, frac_res = parsing.chart(
+            (
+                head_preds_astar, deprel_preds_astar,
+                frac_res, supertags) = parsing.chart(
                 arc_predictions,
                 eval_arc_labels,
                 supertag_scores,
@@ -1015,6 +1023,10 @@ def get_eval_metric(
                 sup_score_scale=sup_score_scale,
                 do_fallback=do_fallback,
             )
+            if factorised == "complete":
+                print(
+                    "Percentage of tokens with new supertags:",
+                    100*chart_sup_known[supertags].mean())
 
             assert eval_deprel_labels is not None
 

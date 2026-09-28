@@ -2772,7 +2772,7 @@ class System():
 
 def process(
         inp
-        ) -> tuple[np.ndarray, np.ndarray]:
+        ) -> tuple[np.ndarray, np.ndarray, bool, np.ndarray]:
     (
         ma, ig, supertag_scores, predicted_pos,
         deprel2id, id2sup_relative, id2pos, root_sup_id, max_l, max_r,
@@ -2914,7 +2914,7 @@ def process(
     deprels_ = np.full((pad_len,), 0)
     deprels_[~ignore] = deprel_result
 
-    return heads, deprels_, found_result
+    return heads, deprels_, found_result, np.array(backtracked[2][1:])
 
 
 def is_projective(heads):
@@ -3088,7 +3088,7 @@ def chart(
         t_arc: float = 1,
         sup_score_scale: float = 1.0,
         do_fallback: bool = True
-        ) -> tuple[np.ndarray, np.ndarray, float]:
+        ) -> tuple[np.ndarray, np.ndarray, float, np.ndarray]:
 
     start = timer()
 
@@ -3122,7 +3122,12 @@ def chart(
     print("Chart took", timedelta(seconds=end-start), "seconds")
     print("Found result:", sum([s[2] for s in stack]), "of", len(stack))
 
-    return np.stack([s[0] for s in stack]), np.stack([s[1] for s in stack]), sum([s[2] for s in stack])/len(stack)
+    return np.stack(
+        [s[0] for s in stack]), np.stack(
+            [s[1] for s in stack]), sum(
+                [s[2] for s in stack])/len(stack), np.concat(
+                    [s[3] for s in stack]
+                )
 
 # TODO: keep track of widest complete item, return it if not finding goal,
 # allow backtracking
