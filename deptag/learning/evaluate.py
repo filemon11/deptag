@@ -1026,7 +1026,7 @@ def get_eval_metric(
             if factorised == "complete":
                 print(
                     "Percentage of tokens with new supertags:",
-                    100*chart_sup_known[supertags].mean())
+                    100*(1-chart_sup_known[supertags].mean()))
 
             assert eval_deprel_labels is not None
 
