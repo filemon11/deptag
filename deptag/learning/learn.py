@@ -7,6 +7,7 @@ from timeit import default_timer as timer
 from datetime import timedelta
 
 import numpy as np
+import pandas as pd
 import random
 import torch
 import transformers
@@ -256,12 +257,13 @@ def get_accuracies(
         sup_predictions, eval_sup_labels,
         pos_predictions, eval_pos_labels,
         arc_predictions, eval_arc_labels,
-        deprel_predictions, eval_deprel_labels,
+        deprel_predictions, eval_deprel_labels: None | np.ndarray,
         factorised_predictions, eval_factorised_labels,
         xpos_predictions, eval_xpos_labels,
         feats_predictions, eval_feats_labels,
         subtypes_predictions, eval_subtypes_labels,
         f_supertag_logps, printinfo: bool = True,
+        sup_acc_per_deprel: bool = False,
         *, k: int = 1):
     dev_sup_acc = None
     dev_pos_acc = None
@@ -274,6 +276,7 @@ def get_accuracies(
     dev_suparc_acc = None
     dev_suparc_sent_acc = None
     dev_arcdep_acc = None
+    dev_sup_acc_per_deprel = dict()
     if k == 1:
         func = evaluate.calc_tag_accuracy_k
     else:
@@ -307,6 +310,21 @@ def get_accuracies(
         #     sup_predictions, eval_sup_labels, writer,
         #     use_tensorboard, n_iter,
         #     typ="sup", k=10, printinfo=True)
+        if sup_acc_per_deprel:
+            assert eval_deprel_labels is not None
+            for deprel_id in np.unique(eval_deprel_labels):
+                acc = evaluate.calc_tag_accuracy_k(
+                    sup_predictions[eval_deprel_labels[:, 1:] == deprel_id],
+                    eval_sup_labels[eval_deprel_labels[:, 1:] == deprel_id],
+                    writer,
+                    use_tensorboard,
+                    n_iter,
+                    typ=f"sup_per_deprel_{deprel_id}",
+                    k=1,
+                    printinfo=printinfo
+                )
+                dev_sup_acc_per_deprel[deprel_id] = acc
+
     if sup_predictions is None and f_supertag_logps is not None:
         sup_predictions = f_supertag_logps
     if sup_predictions is not None and arc_predictions is not None:
@@ -359,7 +377,8 @@ def get_accuracies(
         dev_sup_acc, dev_pos_acc, dev_arc_acc,
         dev_deprel_acc, dev_factorised_accs,
         dev_xpos_acc, dev_feats_accs, dev_subtypes_accs,
-        dev_suparc_acc, dev_suparc_sent_acc, dev_arcdep_acc)
+        dev_suparc_acc, dev_suparc_sent_acc, dev_arcdep_acc,
+        dev_sup_acc_per_deprel)
 
 
 @dataclasses.dataclass
@@ -634,7 +653,6 @@ def train_command(
 
     run_name = (
         file_settings.conllu_file + "-" + tagging_settings.model_name + "-"
-        # + str(tagging_settings.lr) + "-"
         + str(tagging_settings.epochs))
 
     train_set_size = len(train_dataloader)
@@ -1165,7 +1183,8 @@ def train_command(
                         dev_deprel_acc, dev_factorised_accs,
                         dev_xpos_acc, dev_feats_accs,
                         dev_subtypes_accs, dev_suparc_acc,
-                        dev_suparc_sent_acc, dev_arcdep_acc) = (
+                        dev_suparc_sent_acc, dev_arcdep_acc,
+                        dev_sup_acc_per_deprel) = (
                         get_accuracies(
                             writer, n_iter, tagging_settings.use_tensorboard,
                             predictions, eval_labels,
@@ -1241,7 +1260,7 @@ def train_command(
                     # combined_acc /= num_losses
 
                     assert eval_labels is not None
-                    eval_metric: float = evaluate.get_eval_metric(
+                    eval_metric, _ = evaluate.get_eval_metric(
                         tagging_settings.eval_metric,
                         tagging_settings.factorised,
                         tagging_settings.deprels_from_supertags,
@@ -1467,7 +1486,8 @@ def _finish_training(
         deprel_acc, dev_factorised_accs,
         dev_xpos_accs, dev_feats_accs,
         dev_subtypes_accs, dev_suparc_acc,
-        dev_suparc_sent_acc, dev_arcdep_acc) = (
+        dev_suparc_sent_acc, dev_arcdep_acc,
+        dev_sup_acc_per_deprel) = (
         get_accuracies(
             writer, n_iter, args.use_tensorboard,
             predictions, eval_labels,
@@ -1698,7 +1718,8 @@ def evaluate_command(
         dev_deprel_accs, dev_factorised_accs,
         dev_xpos_accs, dev_feats_accs,
         dev_subtypes_accs, dev_suparc_accs,
-        dev_suparc_sent_accs, dev_arcdep_acc) = (
+        dev_suparc_sent_accs, dev_arcdep_acc,
+        dev_sup_acc_per_deprel) = (
         get_accuracies(
             writer, 0, tagging_settings.use_tensorboard,
             predictions, eval_labels,
@@ -1710,7 +1731,10 @@ def evaluate_command(
             feats_predictions, eval_feats_labels,
             subtypes_predictions_, eval_subtypes_labels,
             seen_supertag_logps,
-            k=k, printinfo=False
+            k=k, printinfo=False,
+            sup_acc_per_deprel=(
+                tagging_settings.eval_metric == "cacc"
+                and predictions is not None)
             )
     )
     if k > 1:
@@ -1787,6 +1811,23 @@ def evaluate_command(
             print(
                 f"arc_and_deprel_acc k={k}:", dev_arcdep_acc)
 
+    if len(dev_sup_acc_per_deprel) > 0:
+        named_dict: dict[str, list[float]] = dict()
+        for deprel, idx in dataset.deprel_dict.items():
+            name = f"sup_per_deprel_acc_{deprel} k=1"
+            if idx in dev_sup_acc_per_deprel.keys():
+                print(
+                    f"{name}: {dev_sup_acc_per_deprel[idx]}"
+                )
+                named_dict[deprel] = [dev_sup_acc_per_deprel[idx]]
+            else:
+                print(
+                    f"{name}: nan"
+                )
+                named_dict[deprel] = [float('nan')]
+        pd.DataFrame(named_dict).to_csv(
+            f"sup_per_deprel_{tagging_settings.eval_model_name}.csv")
+
     assert tagging_settings.eval_metric is not None
     eval_metrics: tuple[settings.EvalMetric, ...] = (
         tagging_settings.eval_metric,)
@@ -1798,10 +1839,12 @@ def evaluate_command(
         elif "mst" in tagging_settings.eval_metric:
             eval_metrics = ("mst-uas", "mst-um", "mst-las", "mst-lm")
 
+    metric_per_deprel_df = pd.DataFrame(
+        columns=list(dataset.deprel_dict.keys()))
     other_duration: timedelta = timedelta(0)
     start_eval = timer()
     for metric_name in eval_metrics:
-        eval_metric: float = evaluate.get_eval_metric(
+        eval_metric, per_deprel_dict = evaluate.get_eval_metric(
             metric_name,
             tagging_settings.factorised,
             tagging_settings.deprels_from_supertags,
@@ -1834,6 +1877,7 @@ def evaluate_command(
             t_sup=t_sup,
             sup_score_scale=tagging_settings.sup_score_scale,
             do_fallback=tagging_settings.do_fallback,
+            per_deprel=True,
         )
 
         end = timer()
@@ -1842,12 +1886,31 @@ def evaluate_command(
         print(
             f"eval metric {metric_name}:", eval_metric)
 
+        if len(per_deprel_dict) > 0:
+            metric_dict: dict[str, float] = dict()
+            for deprel, idx in dataset.deprel_dict.items():
+                name = f"{metric_name}_per_deprel_acc_{deprel}"
+                if idx in per_deprel_dict.keys():
+                    print(
+                        f"{name}: {per_deprel_dict[idx]}"
+                    )
+                    metric_dict[deprel] = per_deprel_dict[idx]
+                else:
+                    print(
+                        f"{name}: nan"
+                    )
+                    metric_dict[deprel] = float('nan')
+            metric_per_deprel_df.loc[metric_name] = metric_dict
+
         if return_metric:
             return eval_metric
 
         end = timer()
         other_duration = timedelta(seconds=end-start_eval)
 
+    metric_per_deprel_df.to_csv(
+        f"metrics_per_deprel_{tagging_settings.eval_model_name}.csv"
+    )
     return None
 
 

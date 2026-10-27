@@ -904,8 +904,10 @@ def get_eval_metric(
         t_arc: float = 1,
         sup_score_scale: float = 1.0,
         do_fallback: bool = True,
-        ) -> float:
+        per_deprel: bool = False,
+        ) -> tuple[float, dict[int, float]]:
     eval_metric: float
+    per_deprel_dict: dict[int, float] = dict()
     match eval_metric_type:
         case "cacc":
             eval_metric = combined_acc
@@ -1059,6 +1061,20 @@ def get_eval_metric(
                         eval_deprel_labels,
                         id2deprel=id2deprel
                     )
+                    if per_deprel:
+                        for deprel_id in np.unique(eval_deprel_labels):
+                            metric = parsing.las(
+                                head_preds_astar[
+                                    eval_deprel_labels == deprel_id],
+                                deprel_preds_astar[
+                                    eval_deprel_labels == deprel_id],
+                                eval_arc_labels[
+                                    eval_deprel_labels == deprel_id],
+                                eval_deprel_labels[
+                                    eval_deprel_labels == deprel_id],
+                                id2deprel=id2deprel
+                            )
+                            per_deprel_dict[deprel_id] = metric
                 elif eval_metric_type == "a*-lm":
                     eval_metric = parsing.lm(
                         head_preds_astar,
@@ -1072,6 +1088,13 @@ def get_eval_metric(
                     head_preds_astar,
                     eval_arc_labels,
                 )
+                if per_deprel:
+                    for deprel_id in np.unique(eval_deprel_labels):
+                        metric = parsing.uas(
+                            head_preds_astar[eval_deprel_labels == deprel_id],
+                            eval_arc_labels[eval_deprel_labels == deprel_id],
+                        )
+                        per_deprel_dict[deprel_id] = metric
 
             elif eval_metric_type == "a*-um":
                 eval_metric = parsing.um(
@@ -1115,6 +1138,19 @@ def get_eval_metric(
                         eval_arc_labels,
                         eval_deprel_labels,
                     )
+                    if per_deprel:
+                        for deprel_id in np.unique(eval_deprel_labels):
+                            metric = parsing.las(
+                                mst[
+                                    eval_deprel_labels == deprel_id],
+                                deprel_predictions_mst[
+                                    eval_deprel_labels == deprel_id],
+                                eval_arc_labels[
+                                    eval_deprel_labels == deprel_id],
+                                eval_deprel_labels[
+                                    eval_deprel_labels == deprel_id],
+                            )
+                            per_deprel_dict[deprel_id] = metric
                 elif eval_metric_type == "mst-lm":
                     eval_metric = parsing.lm(
                         mst,
@@ -1128,6 +1164,15 @@ def get_eval_metric(
                     mst,
                     eval_arc_labels,
                 )
+                if per_deprel:
+                    for deprel_id in np.unique(eval_deprel_labels):
+                        metric = parsing.uas(
+                            mst[
+                                eval_deprel_labels == deprel_id],
+                            eval_arc_labels[
+                                eval_deprel_labels == deprel_id],
+                        )
+                        per_deprel_dict[deprel_id] = metric
             elif eval_metric_type == "mst-um":
                 eval_metric = parsing.um(
                     mst,
@@ -1140,4 +1185,4 @@ def get_eval_metric(
                 f"'{eval_metric_type}' unknown"
             )
 
-    return eval_metric
+    return eval_metric, per_deprel_dict
